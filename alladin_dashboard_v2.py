@@ -89,4 +89,4 @@ for _, row in df.iterrows():
         print(Fore.YELLOW + line)
     else:
         print(line)
-
+ 
