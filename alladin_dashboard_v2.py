@@ -1,8 +1,6 @@
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
-import tkinter as tk
-from tkinter import scrolledtext
 from colorama import init, Fore
 
 # Initialize colorama
@@ -92,10 +90,3 @@ for _, row in df.iterrows():
     else:
         print(line)
 
-# GUI display
-root = tk.Tk()
-root.title("Alladin Dashboard")
-text = scrolledtext.ScrolledText(root, width=140, height=30)
-text.pack(padx=10, pady=10)
-text.insert(tk.END, df.to_string())
-root.mainloop()
