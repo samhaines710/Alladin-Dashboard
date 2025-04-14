@@ -2,10 +2,9 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime as dt
-import requests
 import os
 
-# === Safe Telegram Setup ===
+# === Telegram Setup ===
 try:
     import telegram
     TELEGRAM_ENABLED = True
@@ -17,7 +16,7 @@ except ImportError:
     TELEGRAM_ENABLED = False
     bot = None
 
-# === Tickers to Watch ===
+# === Tickers ===
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
 ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']
 
@@ -64,18 +63,19 @@ def evaluate_signals(df, ticker):
     if df is None or len(df) < 30:
         return None
 
-    latest = df.iloc[-1]
-    previous = df.iloc[-2]
+    last_index = df.index[-1]
+    second_last_index = df.index[-2]
 
-    price_change = ((latest['Close'] - previous['Close']) / previous['Close']) * 100
-
-    # === FINAL FIX: safely extract float values ===
     try:
-        rsi = float(latest['RSI'])
-        macd = float(latest['MACD'])
-        signal = float(latest['Signal'])
+        close_now = df.at[last_index, 'Close']
+        close_prev = df.at[second_last_index, 'Close']
+        price_change = ((close_now - close_prev) / close_prev) * 100
+
+        rsi = float(df.at[last_index, 'RSI'])
+        macd = float(df.at[last_index, 'MACD'])
+        signal = float(df.at[last_index, 'Signal'])
     except Exception as e:
-        print(f"[{ticker}] Error converting to float: {e}")
+        print(f"[{ticker}] Error extracting float values: {e}")
         return None
 
     signal_type = None
@@ -104,6 +104,7 @@ def evaluate_signals(df, ticker):
         message = f"{ticker}: {signal_type} | {' | '.join(reasons)}"
         send_telegram_alert(message)
         return message
+
     return None
 
 def send_telegram_alert(message):
