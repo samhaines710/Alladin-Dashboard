@@ -4,12 +4,18 @@ import numpy as np
 import datetime as dt
 import requests
 import os
-import telegram
 
-# === Telegram Setup ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
+# === Safe Telegram Setup ===
+try:
+    import telegram
+    TELEGRAM_ENABLED = True
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+    bot = telegram.Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID else None
+except ImportError:
+    print("Telegram module not found. Alerts disabled.")
+    TELEGRAM_ENABLED = False
+    bot = None
 
 # === Tickers to Watch ===
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
@@ -20,9 +26,9 @@ def market_is_open():
     weekday = now.weekday()
     hour = now.hour
     minute = now.minute
-    # NYSE Hours: 9:30 AM to 4:00 PM EST (convert to local time as needed)
+    # NYSE market hours: 9:30 AM to 4:00 PM EST = 15:30 to 22:00 SAST
     if weekday >= 5:
-        return False  # Weekend
+        return False
     return (hour == 15 and minute >= 30) or (16 <= hour < 22)
 
 def fetch_data(ticker, interval='15m', period='2d'):
@@ -96,13 +102,11 @@ def evaluate_signals(df, ticker):
     return None
 
 def send_telegram_alert(message):
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+    if TELEGRAM_ENABLED and bot:
         try:
             bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
         except Exception as e:
             print(f"Telegram error: {e}")
-    else:
-        print("Telegram not configured. Skipping alert.")
 
 def main():
     now = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
