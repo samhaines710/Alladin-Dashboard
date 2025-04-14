@@ -17,21 +17,32 @@ except ImportError:
     TELEGRAM_ENABLED = False
     bot = None
 
-# === Tickers Categories ===
+# === Ticker Categories ===
 COMMODITIES = ['CL=F', 'NG=F', 'ETH-USD', 'BTC-USD']
 STOCKS = ['DJT', 'WOLF', 'LMT', 'AAPL', 'TSLA', 'DOT']
-# All tickers is union of both
-TICKERS = COMMODITIES + STOCKS
-ALWAYS_ON = COMMODITIES  # These run 24/7
+ETFS = ['SPY', 'IVV']  # Add ETFs if needed
+# Union of all tickers
+TICKERS = COMMODITIES + STOCKS + ETFS
+# ALWAYS_ON: These run 24/7 (comprising commodities and ETFs)
+ALWAYS_ON = COMMODITIES + ETFS
 
-# === (Optional) News/Sentiment Stub for Stocks ===
+# === News/Sentiment Intelligence (Placeholder) ===
 def get_news_sentiment(ticker):
-    # Placeholder: integrate an API or scraping logic here.
-    # For now, it returns "Neutral" for every stock.
-    # In the future, you can return values like "Positive" or "Negative"
-    return "Neutral"
+    # This is a stub. Replace this logic with a real API integration or web scraper.
+    # For demonstration, we assign a preset sentiment for specific stocks.
+    preset = {
+        'DJT': 'Bearish',  # Example: DJT currently shows negative news sentiment.
+        'WOLF': 'Neutral',
+        'LMT': 'Neutral',
+        'AAPL': 'Bullish',
+        'TSLA': 'Neutral',
+        'DOT': 'Neutral',
+        'SPY': 'Neutral',
+        'IVV': 'Neutral'
+    }
+    return preset.get(ticker, "Neutral")
 
-# === RSA Market Hours Logic ===
+# === RSA Market Hours Logic (SAST: 15:30–22:00 for stocks/ETFs) ===
 def market_is_open(ticker):
     utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
     rsa = pytz.timezone("Africa/Johannesburg")
@@ -41,10 +52,10 @@ def market_is_open(ticker):
     minute = now.minute
     if weekday >= 5:
         return False
-    # For stocks, only run between 15:30 and 22:00 SAST.
-    if ticker in STOCKS:
+    # For stocks and ETFs, run only during RSA market hours.
+    if ticker in STOCKS or ticker in ETFS:
         return (hour == 15 and minute >= 30) or (16 <= hour < 22)
-    # Commodities/crypto run 24/7.
+    # Commodities run 24/7.
     return True
 
 # === Indicators ===
@@ -81,7 +92,6 @@ def fetch_data(ticker, interval='15m', period='2d'):
 
 # === Signal & Reversal Evaluation ===
 def evaluate_signals(df, ticker):
-    # Require at least 5 rows to compare reversal trends.
     if df is None or len(df) < 5:
         return None
 
@@ -105,9 +115,9 @@ def evaluate_signals(df, ticker):
     signal_type = None
     reasons = []
 
-    # Adaptive thresholds: different for commodities vs. stocks.
-    if ticker in COMMODITIES:
-        # Commodity thresholds (more sensitive)
+    # --- Adaptive Thresholds ---
+    if ticker in COMMODITIES or ticker in ETFS:
+        # For commodities/ETFs (more sensitive)
         if price_change > 1.0 and rsi > 55 and macd > signal:
             signal_type = "STRONG BUY"
             reasons.append(f"RSI {rsi:.1f}")
@@ -127,7 +137,7 @@ def evaluate_signals(df, ticker):
             reasons.append("MACD falling")
             reasons.append(f"{price_change:.2f}%")
     elif ticker in STOCKS:
-        # Stock thresholds (more relaxed to reduce false signals)
+        # For stocks (more relaxed thresholds)
         if price_change > 1.5 and rsi > 60 and macd > signal:
             signal_type = "STRONG BUY"
             reasons.append(f"RSI {rsi:.1f}")
@@ -146,12 +156,20 @@ def evaluate_signals(df, ticker):
             signal_type = "SELL"
             reasons.append("MACD falling")
             reasons.append(f"{price_change:.2f}%")
-        # Add news sentiment as an extra flag for stocks.
+
+        # --- Incorporate News/Sentiment Intelligence for Stocks ---
         sentiment = get_news_sentiment(ticker)
         if sentiment != "Neutral":
             reasons.append(f"News: {sentiment}")
+            # Optionally, override signals if sentiment conflicts:
+            if sentiment == "Bearish" and signal_type in ["STRONG BUY", "BUY"]:
+                signal_type = "SUSPEND BUY"
+                reasons.append("(Negative news override)")
+            elif sentiment == "Bullish" and signal_type in ["STRONG SELL", "SELL"]:
+                signal_type = "SUSPEND SELL"
+                reasons.append("(Positive news override)")
 
-    # === Trend Reversal Detection (applies to all tickers) ===
+    # --- Trend Reversal Detection (applies to all tickers) ---
     try:
         if prev3['MACD'].item() < prev3['Signal'].item() and \
            prev2['MACD'].item() < prev2['Signal'].item() and \
@@ -205,8 +223,18 @@ def main():
 if __name__ == "__main__":
     main()
 
-# === News/Sentiment Placeholder ===
+# === News/Sentiment Intelligence Placeholder for Stocks ===
 def get_news_sentiment(ticker):
-    # Placeholder: integrate an API or web scraper to get real sentiment.
-    # For now, return "Neutral" for all stocks.
-    return "Neutral"
+    # Placeholder: Insert real news/sentiment analysis here.
+    # For demonstration, we return preset sentiments.
+    preset = {
+        'DJT': 'Bearish',   # Example: DJT has negative sentiment due to recent news.
+        'WOLF': 'Neutral',
+        'LMT': 'Neutral',
+        'AAPL': 'Bullish',
+        'TSLA': 'Neutral',
+        'DOT': 'Neutral',
+        'SPY': 'Neutral',
+        'IVV': 'Neutral'
+    }
+    return preset.get(ticker, "Neutral")
