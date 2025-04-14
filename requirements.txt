@@ -1,6 +1,5 @@
 yfinance
 pandas
 numpy
-termcolor
-requests
-colorama
+python-telegram-bot==13.15
+pytz
