@@ -31,18 +31,25 @@ tickers = [
     "ETH-USD", "AVIX", "DJT", "WOLF"
 ]
 
-# Fetch data
+# Fetch price data
 end = datetime.now()
 start = end - timedelta(days=10)
 data = yf.download(tickers, start=start, end=end)
 
-# Ensure we are working with valid adjusted close data
+# Check for empty or failed download
+if data.empty or len(data.columns) == 0:
+    print("No data fetched — exiting safely.")
+    send_telegram_alert("Alladin Error: No data available from yfinance.")
+    exit()
+
+# Handle Adjusted Close logic
 if isinstance(data.columns, pd.MultiIndex) and "Adj Close" in data.columns.levels[0]:
     data = data["Adj Close"]
 elif "Adj Close" in data.columns:
     data = data["Adj Close"]
 else:
     print("No 'Adj Close' found. Exiting...")
+    send_telegram_alert("Alladin Error: 'Adj Close' missing in data.")
     exit()
 
 data = data.dropna(axis=1, thresh=len(data) - 2)
@@ -52,17 +59,16 @@ volatility = returns.std() * 100
 last_prices = data.iloc[-1]
 trend = data.diff().iloc[-3:].sum()
 
-# Debug outputs
+# Debug
 print("Data columns:", list(data.columns))
-print("Length of trend:", len(trend))
 print("Length of df inputs:", len(last_prices))
 
-# Bias Dictionaries
+# Bias Sources
 insider_bias = {"WOLF": "SELL", "DJT": "BUY", "NVDA": "BUY", "PLTR": "SELL"}
 sentiment_bias = {"WOLF": "NEGATIVE", "DJT": "POSITIVE", "NVDA": "POSITIVE", "PLTR": "NEGATIVE"}
 thresholds = {"default_buy": 3, "default_sell": -3}
 
-# Pattern recognition
+# Pattern detection
 def pattern_recognition(series):
     if len(series) < 6:
         return "NEUTRAL"
@@ -75,7 +81,7 @@ def pattern_recognition(series):
 
 patterns = {t: pattern_recognition(data[t].dropna()) for t in data.columns}
 
-# Strategy classification
+# Strategy tagging
 dynamic_strategies = {}
 for t in data.columns:
     if abs(trend[t]) > 0.5 and volatility[t] < 4 and abs(weekly_returns[t]) > 1.5:
@@ -115,18 +121,18 @@ df = pd.DataFrame({
 })
 
 signal_results = df.apply(signal_logic, axis=1).tolist()
-if len(signal_results) == len(df):
+if signal_results:
     df["Signal"], df["Confidence"] = zip(*signal_results)
 else:
     df["Signal"], df["Confidence"] = "NEUTRAL", 0
-    print("Fallback: mismatched signal results")
+    print("No valid signal results to unpack.")
 
-# Filter for new signals
+# New trades only
 today = datetime.now().strftime("%Y-%m-%d")
 new_signals = df[df["Signal"].isin(["STRONG BUY", "STRONG SELL"])]
 new_signals = new_signals[~new_signals.index.isin(memory_log[memory_log["Date"] == today]["Ticker"])]
 
-# Alert formatting
+# Alert message format
 def format_alert(ticker, row):
     price = row["Current Price"]
     trade_type = "CALL" if row["Signal"] == "STRONG BUY" else "PUT"
@@ -148,10 +154,9 @@ for ticker, row in new_signals.iterrows():
     send_telegram_alert(format_alert(ticker, row))
     memory_log = pd.concat([memory_log, pd.DataFrame([[ticker, row["Signal"], today]], columns=["Ticker", "Signal", "Date"])])
 
-# Save memory log
 memory_log.to_csv(memory_file, index=False)
 
-# OIL + NG ZONES
+# OIL/NG ENTRY ZONES
 zone_window = 10
 zone_data = yf.download(["CL=F", "NG=F"], start=datetime.now() - timedelta(days=15), end=datetime.now())
 
@@ -160,7 +165,8 @@ if isinstance(zone_data.columns, pd.MultiIndex) and "Adj Close" in zone_data.col
 elif "Adj Close" in zone_data.columns:
     zone_data = zone_data["Adj Close"]
 else:
-    print("No Adj Close in zone data.")
+    print("Zone 'Adj Close' missing.")
+    send_telegram_alert("Oil/NG data error: 'Adj Close' not found.")
     zone_data = pd.DataFrame()
 
 if not zone_data.empty:
@@ -194,8 +200,7 @@ if not zone_data.empty:
     else:
         send_telegram_alert("Oil/NG: Price outside optimal dynamic zones.")
 else:
-    send_telegram_alert("Oil/NG zone data unavailable.")
+    print("Zone data unavailable.")
 
-# Save output
 df.to_csv("alladin_dashboard_v2.csv")
 print("Dashboard saved as alladin_dashboard_v2.csv")
