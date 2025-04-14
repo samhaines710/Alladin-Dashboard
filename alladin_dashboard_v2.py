@@ -115,7 +115,7 @@ df = pd.DataFrame({
     "Pattern": [patterns.get(t, "NEUTRAL") for t in data.columns],
     "Sentiment": [sentiment_bias.get(t, "NEUTRAL") for t in data.columns]
 })
-df[["Signal", "Confidence"]] = df.apply(lambda row: pd.Series(signal_logic(row)), axis=1)
+df["Signal"], df["Confidence"] = zip(*df.apply(signal_logic, axis=1))
 
 # Suppress already alerted tickers today
 today = datetime.now().strftime("%Y-%m-%d")
@@ -132,7 +132,7 @@ def format_alert(ticker, row):
     return f"""
 {ticker} TRADE ALERT: {row['Signal']}
 ----------------------------------------
-Price: ${price} â Target: ${tp2}
+Price: ${price} → Target: ${tp2}
 Trend: {row['Trend']} | Strategy: {row['Strategy']}
 Volatility: {row['Volatility (%)']}% | Return: {row['Weekly Return (%)']}%
 Pattern: {row['Pattern']} | Insider: {row['Insider Bias']} | Sentiment: {row['Sentiment']}
@@ -147,8 +147,7 @@ for ticker, row in new_signals.iterrows():
 # Save memory
 memory_log.to_csv(memory_file, index=False)
 
-
-# 10. Oil & NG Low-Risk Option Entry Zone Alerts (Dynamic Calculation)
+# Oil & NG Low-Risk Option Entry Zones
 zone_window = 10
 zone_data = yf.download(["CL=F", "NG=F"], start=datetime.now() - timedelta(days=15), end=datetime.now())["Adj Close"]
 zone_info = zone_data[-zone_window:]
@@ -172,20 +171,17 @@ for ticker in ["CL=F", "NG=F"]:
     put_low, put_high = zones[ticker]["PUT"]
 
     if call_low <= price <= call_high:
-        oil_ng_alerts.append(f"{ticker} CALL ENTRY ZONE: ${price} in ${call_low}â${call_high} | Mean: ${round(mean_prices[ticker],2)} Â± {round(price_std[ticker],2)}")
-
+        oil_ng_alerts.append(f"{ticker} CALL ENTRY ZONE: ${price} in ${call_low}-${call_high} | Mean: ${round(mean_prices[ticker],2)} ± {round(price_std[ticker],2)}")
     elif put_low <= price <= put_high:
-        oil_ng_alerts.append(f"{ticker} PUT ENTRY ZONE: ${price} in ${put_low}â${put_high} | Mean: ${round(mean_prices[ticker],2)} Â± {round(price_std[ticker],2)}")
+        oil_ng_alerts.append(f"{ticker} PUT ENTRY ZONE: ${price} in ${put_low}-${put_high} | Mean: ${round(mean_prices[ticker],2)} ± {round(price_std[ticker],2)}")
 
 if oil_ng_alerts:
     send_telegram_alert(
-    "DYNAMIC OIL/NG OPTIONS ZONES:\n" + "\n".join(oil_ng_alerts)
-)
+        "DYNAMIC OIL/NG OPTIONS ZONES:\n\n• " + "\n• ".join(oil_ng_alerts)
+    )
 else:
     send_telegram_alert("Oil/NG: Price outside optimal dynamic zones.")
-
 
 # Save output
 df.to_csv("alladin_dashboard_v2.csv")
 print("Dashboard saved as alladin_dashboard_v2.csv")
- 
