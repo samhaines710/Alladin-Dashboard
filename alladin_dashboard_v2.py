@@ -178,8 +178,9 @@ for ticker in ["CL=F", "NG=F"]:
         oil_ng_alerts.append(f"{ticker} PUT ENTRY ZONE: ${price} in ${put_low}â${put_high} | Mean: ${round(mean_prices[ticker],2)} Â± {round(price_std[ticker],2)}")
 
 if oil_ng_alerts:
-    send_telegram_alert("DYNAMIC OIL/NG OPTIONS ZONES:
-" + "\n".join(oil_ng_alerts))
+    send_telegram_alert(
+    "DYNAMIC OIL/NG OPTIONS ZONES:\n" + "\n".join(oil_ng_alerts)
+)
 else:
     send_telegram_alert("Oil/NG: Price outside optimal dynamic zones.")
 
