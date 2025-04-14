@@ -68,9 +68,15 @@ def evaluate_signals(df, ticker):
     previous = df.iloc[-2]
 
     price_change = ((latest['Close'] - previous['Close']) / previous['Close']) * 100
-    rsi = latest['RSI'].item() if hasattr(latest['RSI'], 'item') else latest['RSI']
-    macd = latest['MACD'].item() if hasattr(latest['MACD'], 'item') else latest['MACD']
-    signal = latest['Signal'].item() if hasattr(latest['Signal'], 'item') else latest['Signal']
+
+    # === FINAL FIX: safely extract float values ===
+    try:
+        rsi = float(latest['RSI'])
+        macd = float(latest['MACD'])
+        signal = float(latest['Signal'])
+    except Exception as e:
+        print(f"[{ticker}] Error converting to float: {e}")
+        return None
 
     signal_type = None
     reasons = []
