@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import datetime as dt
 import os
+import pytz
 
 # === Telegram Setup ===
 try:
@@ -20,19 +21,26 @@ except ImportError:
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
 ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']  # crypto + commodities run 24/7
 
-# === RSA Market Timing Logic ===
-def market_is_open():
-    now = dt.datetime.now(dt.timezone.utc).astimezone()  # local time in SAST assumed
+# === RSA Timezone Logic ===
+def market_is_open(ticker):
+    utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+    rsa = pytz.timezone("Africa/Johannesburg")
+    now = utc_now.astimezone(rsa)
+
     weekday = now.weekday()
     hour = now.hour
     minute = now.minute
 
-    # RSA stock market hours: 15:30–22:00 SAST
     if weekday >= 5:
         return False
-    return (hour == 15 and minute >= 30) or (16 <= hour < 22)
 
-# === Pull Data ===
+    # RSA market: 15:30–22:00 local time
+    if ticker not in ALWAYS_ON:
+        return (hour == 15 and minute >= 30) or (16 <= hour < 22)
+
+    return True
+
+# === Data Fetching ===
 def fetch_data(ticker, interval='15m', period='2d'):
     try:
         df = yf.download(ticker, interval=interval, period=period, progress=False)
@@ -64,7 +72,7 @@ def compute_macd(series, short=12, long=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
-# === Signal Logic ===
+# === Signal Detection ===
 def evaluate_signals(df, ticker):
     if df is None or len(df) < 30:
         return None
@@ -123,14 +131,13 @@ def send_telegram_alert(message):
 
 # === Main Runtime ===
 def main():
-    now = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"Running Alladin Dashboard at {now}")
+    now = dt.datetime.now(pytz.timezone('Africa/Johannesburg')).strftime('%Y-%m-%d %H:%M:%S')
+    print(f"Running Alladin Dashboard at RSA time: {now}")
 
-    market_open = market_is_open()
     alerts = []
 
     for ticker in TICKERS:
-        if not market_open and ticker not in ALWAYS_ON:
+        if not market_is_open(ticker):
             print(f"[{ticker}] Market is closed. Skipping.")
             continue
 
