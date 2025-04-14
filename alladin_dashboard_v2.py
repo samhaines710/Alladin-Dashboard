@@ -16,19 +16,23 @@ except ImportError:
     TELEGRAM_ENABLED = False
     bot = None
 
-# === Tickers ===
+# === Tickers to Track ===
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
-ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']
+ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']  # crypto + commodities run 24/7
 
+# === RSA Market Timing Logic ===
 def market_is_open():
-    now = dt.datetime.now()
+    now = dt.datetime.now(dt.timezone.utc).astimezone()  # local time in SAST assumed
     weekday = now.weekday()
     hour = now.hour
     minute = now.minute
+
+    # RSA stock market hours: 15:30–22:00 SAST
     if weekday >= 5:
         return False
     return (hour == 15 and minute >= 30) or (16 <= hour < 22)
 
+# === Pull Data ===
 def fetch_data(ticker, interval='15m', period='2d'):
     try:
         df = yf.download(ticker, interval=interval, period=period, progress=False)
@@ -43,6 +47,7 @@ def fetch_data(ticker, interval='15m', period='2d'):
         print(f"[{ticker}] Error fetching data: {e}")
         return None
 
+# === Indicators ===
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
@@ -59,6 +64,7 @@ def compute_macd(series, short=12, long=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
+# === Signal Logic ===
 def evaluate_signals(df, ticker):
     if df is None or len(df) < 30:
         return None
@@ -107,6 +113,7 @@ def evaluate_signals(df, ticker):
 
     return None
 
+# === Alert System ===
 def send_telegram_alert(message):
     if TELEGRAM_ENABLED and bot:
         try:
@@ -114,10 +121,11 @@ def send_telegram_alert(message):
         except Exception as e:
             print(f"Telegram error: {e}")
 
+# === Main Runtime ===
 def main():
     now = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"Running Alladin Dashboard at {now}")
-    
+
     market_open = market_is_open()
     alerts = []
 
