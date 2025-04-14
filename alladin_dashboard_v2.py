@@ -11,20 +11,32 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
-# === Track These Tickers ===
+# === Tickers to Watch ===
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
+ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']
 
-def fetch_data(ticker, interval='5m', period='1d'):
+def market_is_open():
+    now = dt.datetime.now()
+    weekday = now.weekday()
+    hour = now.hour
+    minute = now.minute
+    # NYSE Hours: 9:30 AM to 4:00 PM EST (convert to local time as needed)
+    if weekday >= 5:
+        return False  # Weekend
+    return (hour == 15 and minute >= 30) or (16 <= hour < 22)
+
+def fetch_data(ticker, interval='15m', period='2d'):
     try:
         df = yf.download(ticker, interval=interval, period=period, progress=False)
-        if df.empty:
+        if df is None or df.empty or len(df) < 30:
+            print(f"[{ticker}] No data available. Skipping.")
             return None
         df['returns'] = df['Close'].pct_change()
         df['RSI'] = compute_rsi(df['Close'])
         df['MACD'], df['Signal'] = compute_macd(df['Close'])
         return df
     except Exception as e:
-        print(f"Error fetching {ticker}: {e}")
+        print(f"[{ticker}] Error fetching data: {e}")
         return None
 
 def compute_rsi(series, period=14):
@@ -93,18 +105,28 @@ def send_telegram_alert(message):
         print("Telegram not configured. Skipping alert.")
 
 def main():
-    print(f"Running Alladin Dashboard at {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    now = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"Running Alladin Dashboard at {now}")
+    
+    market_open = market_is_open()
     alerts = []
 
     for ticker in TICKERS:
+        if not market_open and ticker not in ALWAYS_ON:
+            print(f"[{ticker}] Market is closed. Skipping.")
+            continue
+
         df = fetch_data(ticker)
         result = evaluate_signals(df, ticker)
         if result:
             alerts.append(result)
 
-    print("\n--- Alerts ---")
-    for alert in alerts:
-        print(alert)
+    if alerts:
+        print("\n--- Alerts ---")
+        for alert in alerts:
+            print(alert)
+    else:
+        print("No signals triggered.")
 
 if __name__ == "__main__":
     main()
