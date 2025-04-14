@@ -21,7 +21,7 @@ except ImportError:
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
 ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']
 
-# === Market Timing (RSA) ===
+# === RSA Market Timing Logic ===
 def market_is_open(ticker):
     utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
     rsa = pytz.timezone("Africa/Johannesburg")
@@ -39,7 +39,7 @@ def market_is_open(ticker):
 
     return True
 
-# === Fetch and Preprocess Data ===
+# === Data Fetching ===
 def fetch_data(ticker, interval='15m', period='2d'):
     try:
         df = yf.download(ticker, interval=interval, period=period, progress=False)
@@ -49,12 +49,13 @@ def fetch_data(ticker, interval='15m', period='2d'):
         df['returns'] = df['Close'].pct_change()
         df['RSI'] = compute_rsi(df['Close'])
         df['MACD'], df['Signal'] = compute_macd(df['Close'])
-        return df
+        df = df.dropna()
+        return df if len(df) >= 2 else None
     except Exception as e:
         print(f"[{ticker}] Error fetching data: {e}")
         return None
 
-# === Indicators ===
+# === Technical Indicators ===
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
@@ -71,11 +72,8 @@ def compute_macd(series, short=12, long=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
-# === Signal Evaluation ===
+# === Signal Logic (Safe and Accurate) ===
 def evaluate_signals(df, ticker):
-    if df is None or len(df) < 30:
-        return None
-
     try:
         latest = df.iloc[-1]
         previous = df.iloc[-2]
@@ -120,7 +118,7 @@ def evaluate_signals(df, ticker):
 
     return None
 
-# === Send Alert ===
+# === Telegram Alerting ===
 def send_telegram_alert(message):
     if TELEGRAM_ENABLED and bot:
         try:
@@ -128,7 +126,7 @@ def send_telegram_alert(message):
         except Exception as e:
             print(f"Telegram error: {e}")
 
-# === Run the Dashboard ===
+# === Main Execution ===
 def main():
     rsa_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
     print(f"Running Alladin Dashboard at RSA time: {rsa_now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -141,6 +139,10 @@ def main():
             continue
 
         df = fetch_data(ticker)
+        if df is None:
+            print(f"[{ticker}] Skipping due to bad data.")
+            continue
+
         result = evaluate_signals(df, ticker)
         if result:
             alerts.append(result)
