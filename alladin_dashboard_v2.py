@@ -8,7 +8,7 @@ import pytz
 # === Telegram Setup ===
 try:
     import telegram
-    https://www.diedamhuis.co.za/easy-beef-butternut-bobotie-recipe/TELEGRAM_ENABLED = True
+    TELEGRAM_ENABLED = True
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
     bot = telegram.Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID else None
@@ -164,3 +164,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
