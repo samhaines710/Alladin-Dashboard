@@ -20,18 +20,16 @@ except ImportError:
 # === Ticker Categories ===
 COMMODITIES = ['CL=F', 'NG=F', 'ETH-USD', 'BTC-USD']
 STOCKS = ['DJT', 'WOLF', 'LMT', 'AAPL', 'TSLA', 'DOT']
-ETFS = ['SPY', 'IVV']  # Add ETFs if needed
-# Union of all tickers
+ETFS = ['SPY', 'IVV']  # Add more ETFs as needed
 TICKERS = COMMODITIES + STOCKS + ETFS
-# ALWAYS_ON: These run 24/7 (comprising commodities and ETFs)
+# ALWAYS_ON: These run 24/7 (commodities and ETFs)
 ALWAYS_ON = COMMODITIES + ETFS
 
-# === News/Sentiment Intelligence (Placeholder) ===
+# === News/Sentiment Intelligence (Placeholder for Stocks) ===
 def get_news_sentiment(ticker):
-    # This is a stub. Replace this logic with a real API integration or web scraper.
-    # For demonstration, we assign a preset sentiment for specific stocks.
+    # Placeholder: Replace with real news/sentiment API or scraping.
     preset = {
-        'DJT': 'Bearish',  # Example: DJT currently shows negative news sentiment.
+        'DJT': 'Bearish',   # DJT has negative news currently.
         'WOLF': 'Neutral',
         'LMT': 'Neutral',
         'AAPL': 'Bullish',
@@ -52,13 +50,13 @@ def market_is_open(ticker):
     minute = now.minute
     if weekday >= 5:
         return False
-    # For stocks and ETFs, run only during RSA market hours.
+    # Stocks and ETFs only trade during these hours.
     if ticker in STOCKS or ticker in ETFS:
         return (hour == 15 and minute >= 30) or (16 <= hour < 22)
-    # Commodities run 24/7.
+    # Commodities trade 24/7.
     return True
 
-# === Indicators ===
+# === Indicators Functions ===
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
@@ -90,7 +88,25 @@ def fetch_data(ticker, interval='15m', period='2d'):
         print(f"[{ticker}] Error fetching data: {e}")
         return None
 
-# === Signal & Reversal Evaluation ===
+# === Options Evaluation for Commodities (NG and Oil) ===
+def evaluate_options(ticker, df, signal_type):
+    # Only apply to commodities (oil and natural gas)
+    if ticker not in ['CL=F', 'NG=F']:
+        return None
+    current_price = float(df.iloc[-1]['Close'])
+    if signal_type in ["STRONG BUY", "BUY"]:
+        entry = current_price
+        target = current_price * 1.02  # example: 2% profit target
+        stop = current_price * 0.99    # example: 1% stop loss
+        return f"{ticker}: CALL OPTION | Entry: {entry:.2f} | Target: {target:.2f} | Stop: {stop:.2f}"
+    elif signal_type in ["STRONG SELL", "SELL"]:
+        entry = current_price
+        target = current_price * 0.98  # example: 2% profit target for put
+        stop = current_price * 1.01    # example: 1% stop loss
+        return f"{ticker}: PUT OPTION | Entry: {entry:.2f} | Target: {target:.2f} | Stop: {stop:.2f}"
+    return None
+
+# === Signal & Trend Reversal Evaluation ===
 def evaluate_signals(df, ticker):
     if df is None or len(df) < 5:
         return None
@@ -115,9 +131,8 @@ def evaluate_signals(df, ticker):
     signal_type = None
     reasons = []
 
-    # --- Adaptive Thresholds ---
+    # --- Adaptive Thresholds: Commodities/ETFs vs Stocks ---
     if ticker in COMMODITIES or ticker in ETFS:
-        # For commodities/ETFs (more sensitive)
         if price_change > 1.0 and rsi > 55 and macd > signal:
             signal_type = "STRONG BUY"
             reasons.append(f"RSI {rsi:.1f}")
@@ -137,7 +152,6 @@ def evaluate_signals(df, ticker):
             reasons.append("MACD falling")
             reasons.append(f"{price_change:.2f}%")
     elif ticker in STOCKS:
-        # For stocks (more relaxed thresholds)
         if price_change > 1.5 and rsi > 60 and macd > signal:
             signal_type = "STRONG BUY"
             reasons.append(f"RSI {rsi:.1f}")
@@ -156,12 +170,10 @@ def evaluate_signals(df, ticker):
             signal_type = "SELL"
             reasons.append("MACD falling")
             reasons.append(f"{price_change:.2f}%")
-
-        # --- Incorporate News/Sentiment Intelligence for Stocks ---
+        # Incorporate news/sentiment intelligence for stocks.
         sentiment = get_news_sentiment(ticker)
         if sentiment != "Neutral":
             reasons.append(f"News: {sentiment}")
-            # Optionally, override signals if sentiment conflicts:
             if sentiment == "Bearish" and signal_type in ["STRONG BUY", "BUY"]:
                 signal_type = "SUSPEND BUY"
                 reasons.append("(Negative news override)")
@@ -184,6 +196,13 @@ def evaluate_signals(df, ticker):
     except Exception as e:
         print(f"[{ticker}] Reversal check failed: {e}")
 
+    # If there is a signal for commodities/ETFs, add options evaluation.
+    options_signal = None
+    if ticker in COMMODITIES:
+        options_signal = evaluate_options(ticker, df, signal_type)
+        if options_signal:
+            send_telegram_alert(options_signal)
+
     if signal_type:
         message = f"{ticker}: {signal_type} | {' | '.join(reasons)}"
         send_telegram_alert(message)
@@ -199,11 +218,28 @@ def send_telegram_alert(message):
         except Exception as e:
             print(f"Telegram error: {e}")
 
+# === Options Evaluation for Commodities ===
+def evaluate_options(ticker, df, signal_type):
+    # Only for oil and natural gas.
+    if ticker not in ['CL=F', 'NG=F']:
+        return None
+    current_price = float(df.iloc[-1]['Close'])
+    if signal_type in ["STRONG BUY", "BUY"]:
+        entry = current_price
+        target = current_price * 1.02  # e.g., 2% above as a profit target
+        stop = current_price * 0.99    # e.g., 1% below as stop loss
+        return f"{ticker}: CALL OPTION | Entry: {entry:.2f} | Target: {target:.2f} | Stop: {stop:.2f}"
+    elif signal_type in ["STRONG SELL", "SELL"]:
+        entry = current_price
+        target = current_price * 0.98  # e.g., 2% lower for put option target
+        stop = current_price * 1.01    # e.g., 1% above as stop loss
+        return f"{ticker}: PUT OPTION | Entry: {entry:.2f} | Target: {target:.2f} | Stop: {stop:.2f}"
+    return None
+
 # === Main Execution ===
 def main():
     rsa_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
     print(f"Running Alladin Dashboard at RSA time: {rsa_now.strftime('%Y-%m-%d %H:%M:%S')}")
-
     alerts = []
     for ticker in TICKERS:
         if not market_is_open(ticker):
@@ -223,12 +259,11 @@ def main():
 if __name__ == "__main__":
     main()
 
-# === News/Sentiment Intelligence Placeholder for Stocks ===
+# === News/Sentiment Intelligence Placeholder ===
 def get_news_sentiment(ticker):
-    # Placeholder: Insert real news/sentiment analysis here.
-    # For demonstration, we return preset sentiments.
+    # Placeholder: Replace with real news/sentiment API logic.
     preset = {
-        'DJT': 'Bearish',   # Example: DJT has negative sentiment due to recent news.
+        'DJT': 'Bearish',
         'WOLF': 'Neutral',
         'LMT': 'Neutral',
         'AAPL': 'Bullish',
