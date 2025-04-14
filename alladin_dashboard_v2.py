@@ -25,10 +25,10 @@ else:
     memory_log = pd.DataFrame(columns=["Ticker", "Signal", "Date"])
 
 tickers = [
-    "NVDA", "PLTR", "SMCI", "LMT", "NOC", "CCJ", "ASML", "PM", "PMP",
-    "NEM", "T", "CVS", "CL=F", "BZ=F", "GC=F", "NG=F", "HG=F", "SPY",
-    "QQQ", "XLE", "XLF", "XLK", "ARKK", "GDX", "BTC-USD", "ETH-USD",
-    "AVIX", "DJT", "WOLF"
+    "NVDA", "PLTR", "SMCI", "LMT", "NOC", "CCJ", "ASML", "PM",
+    "NEM", "T", "CVS", "CL=F", "BZ=F", "GC=F", "NG=F", "HG=F",
+    "SPY", "QQQ", "XLE", "XLF", "XLK", "ARKK", "GDX", "BTC-USD",
+    "ETH-USD", "AVIX", "DJT", "WOLF"
 ]
 
 end = datetime.now()
@@ -41,11 +41,19 @@ elif 'Adj Close' in data.columns:
     data = data['Adj Close']
 
 data = data.dropna(axis=1, thresh=len(data) - 2)
+
 returns = data.pct_change().dropna()
 weekly_returns = returns.sum() * 100
 volatility = returns.std() * 100
 last_prices = data.iloc[-1]
 trend = data.diff().iloc[-3:].sum()
+
+# Debug outputs
+print("Data columns:", list(data.columns))
+print("Length of trend:", len(trend))
+print("Length of weekly_returns:", len(weekly_returns))
+print("Length of volatility:", len(volatility))
+print("Length of last_prices:", len(last_prices))
 
 # Insider Bias
 insider_bias = {"WOLF": "SELL", "DJT": "BUY", "NVDA": "BUY", "PLTR": "SELL"}
@@ -115,7 +123,14 @@ df = pd.DataFrame({
     "Pattern": [patterns.get(t, "NEUTRAL") for t in data.columns],
     "Sentiment": [sentiment_bias.get(t, "NEUTRAL") for t in data.columns]
 })
-df["Signal"], df["Confidence"] = zip(*df.apply(signal_logic, axis=1))
+
+# Safe signal unpacking
+signal_results = df.apply(signal_logic, axis=1).tolist()
+if len(signal_results) == len(df):
+    df["Signal"], df["Confidence"] = zip(*signal_results)
+else:
+    df["Signal"], df["Confidence"] = "NEUTRAL", 0
+    print("Length mismatch in signal logic — fallback applied")
 
 # Suppress already alerted tickers today
 today = datetime.now().strftime("%Y-%m-%d")
