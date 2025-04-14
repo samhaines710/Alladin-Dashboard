@@ -1,7 +1,5 @@
-# Alladin Dashboard v2 — Dynamic Market Mode
-# Auto-adjusts signal threshold based on volatility conditions
-# Sends STRONG or MODERATE confidence alerts based on market state
-# Fully replaces old script with better long-term intelligence
+# Alladin Dashboard v2 — Now with Intraday Spike Reversal Alerts + Dynamic Mode
+# Tracks 5-minute candle spikes for high-volatility tickers (DOT, DJT, BTC, WOLF, CL=F, NG=F)
 
 import yfinance as yf
 import pandas as pd
@@ -10,7 +8,6 @@ from datetime import datetime, timedelta
 import os
 import requests
 
-# Telegram setup
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -22,7 +19,6 @@ def send_telegram_alert(message):
         except Exception as e:
             print("Telegram error:", e)
 
-# Memory log
 memory_file = "signal_memory.csv"
 if os.path.exists(memory_file):
     memory_log = pd.read_csv(memory_file)
@@ -32,10 +28,10 @@ else:
 tickers = [
     "NVDA", "PLTR", "SMCI", "LMT", "NOC", "CCJ", "ASML", "PM", "NEM", "T", "CVS",
     "CL=F", "BZ=F", "GC=F", "NG=F", "HG=F", "SPY", "QQQ", "XLE", "XLF", "XLK",
-    "ARKK", "GDX", "BTC-USD", "ETH-USD", "AVIX", "DJT", "WOLF"
+    "ARKK", "GDX", "BTC-USD", "ETH-USD", "AVIX", "DJT", "WOLF", "DOT-USD"
 ]
 
-# Download price data
+# Download recent 10-day daily data
 end = datetime.now()
 start = end - timedelta(days=10)
 data = yf.download(tickers, start=start, end=end)
@@ -60,7 +56,6 @@ else:
     send_telegram_alert("Alladin Error: No pricing columns found.")
     exit()
 
-# Clean and calculate
 data = data.dropna(axis=1, thresh=len(data) - 2)
 returns = data.pct_change().dropna()
 weekly_returns = returns.sum() * 100
@@ -73,11 +68,9 @@ avg_vol = volatility.mean()
 market_mode = "STABLE" if avg_vol < 4 else "VOLATILE"
 score_threshold = 3 if market_mode == "STABLE" else 2
 
-# Bias sources
 insider_bias = {"WOLF": "SELL", "DJT": "BUY", "NVDA": "BUY", "PLTR": "SELL"}
 sentiment_bias = {"WOLF": "NEGATIVE", "DJT": "POSITIVE", "NVDA": "POSITIVE", "PLTR": "NEGATIVE"}
 
-# Pattern recognition
 def pattern_recognition(series):
     if len(series) < 6:
         return "NEUTRAL"
@@ -90,7 +83,6 @@ def pattern_recognition(series):
 
 patterns = {t: pattern_recognition(data[t].dropna()) for t in data.columns}
 
-# Strategy tagging
 dynamic_strategies = {}
 for t in data.columns:
     if abs(trend[t]) > 0.5 and volatility[t] < 4 and abs(weekly_returns[t]) > 1.5:
@@ -100,7 +92,6 @@ for t in data.columns:
     else:
         dynamic_strategies[t] = "Neutral"
 
-# Signal logic
 def signal_logic(row):
     score = 0
     if row["Trend"] == "RISING" and row["Weekly Return (%)"] > 3:
@@ -118,7 +109,6 @@ def signal_logic(row):
         return f"{confidence} BUY" if score > 0 else f"{confidence} SELL", score
     return "NEUTRAL", score
 
-# Build DataFrame
 df = pd.DataFrame({
     "Weekly Return (%)": weekly_returns.round(2),
     "Volatility (%)": volatility.round(2),
@@ -131,7 +121,6 @@ df = pd.DataFrame({
 })
 df[["Signal", "Confidence"]] = df.apply(lambda row: pd.Series(signal_logic(row)), axis=1)
 
-# Filter and alert
 today = datetime.now().strftime("%Y-%m-%d")
 new_signals = df[df["Signal"].str.contains("BUY|SELL")]
 new_signals = new_signals[~new_signals.index.isin(memory_log[memory_log["Date"] == today]["Ticker"])]
@@ -148,8 +137,46 @@ else:
         memory_log = pd.concat([memory_log, pd.DataFrame([[ticker, row["Signal"], today]], columns=["Ticker", "Signal", "Date"])])
     send_telegram_alert("\n".join(alerts))
 
-# Save
+# --- Signal Reversal Detection ---
+reversal_alerts = []
+if os.path.exists(memory_file):
+    prev_signals = pd.read_csv(memory_file)
+    merged = pd.merge(df.reset_index(), prev_signals, left_on="index", right_on="Ticker", how="inner")
+    for _, row in merged.iterrows():
+        prev = row["Signal_y"]
+        curr = row["Signal_x"]
+        if prev != "NEUTRAL" and curr != "NEUTRAL" and prev != curr:
+            reversal_alerts.append(f"REVERSAL DETECTED: {row['Ticker']} switched from {prev} to {curr}")
+    if reversal_alerts:
+        send_telegram_alert("\n".join(reversal_alerts))
+
+# --- Intraday Spike Reversal Logic (5-min candle) ---
+spike_tickers = ["DOT-USD", "DJT", "BTC-USD", "WOLF", "CL=F", "NG=F"]
+now = datetime.utcnow()
+start_intraday = now - timedelta(minutes=60)
+intraday_data = yf.download(spike_tickers, start=start_intraday, interval="5m")
+
+if isinstance(intraday_data.columns, pd.MultiIndex):
+    intraday_data = intraday_data["Close"]
+
+spike_messages = []
+for ticker in spike_tickers:
+    if ticker not in intraday_data.columns:
+        continue
+    prices = intraday_data[ticker].dropna()
+    if len(prices) >= 4:
+        p_start = prices.iloc[0]
+        p_low = prices.min()
+        p_high = prices.max()
+        p_now = prices.iloc[-1]
+        drop = round((p_low - p_start) / p_start * 100, 2)
+        rise = round((p_high - p_low) / p_low * 100, 2)
+        rebound = round((p_now - p_low) / p_low * 100, 2)
+        if abs(drop) >= 3 and rebound >= 3:
+            spike_messages.append(f"{ticker} Intraday Reversal: Drop {drop}%, Rebound {rebound}%, High Swing {rise}% (5-min)")
+if spike_messages:
+    send_telegram_alert("Intraday Reversals (5-min):\n" + "\n".join(spike_messages))
+
 memory_log.to_csv(memory_file, index=False)
 df.to_csv("alladin_dashboard_v2.csv")
-print("Alladin Dashboard updated with dynamic mode.")
-
+print("Alladin Dashboard saved.")
