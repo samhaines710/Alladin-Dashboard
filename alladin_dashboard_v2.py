@@ -26,7 +26,6 @@ def market_is_open():
     weekday = now.weekday()
     hour = now.hour
     minute = now.minute
-    # NYSE market hours: 9:30 AM to 4:00 PM EST = 15:30 to 22:00 SAST
     if weekday >= 5:
         return False
     return (hour == 15 and minute >= 30) or (16 <= hour < 22)
@@ -69,9 +68,9 @@ def evaluate_signals(df, ticker):
     previous = df.iloc[-2]
 
     price_change = ((latest['Close'] - previous['Close']) / previous['Close']) * 100
-    rsi = latest['RSI']
-    macd = latest['MACD']
-    signal = latest['Signal']
+    rsi = latest['RSI'].item() if hasattr(latest['RSI'], 'item') else latest['RSI']
+    macd = latest['MACD'].item() if hasattr(latest['MACD'], 'item') else latest['MACD']
+    signal = latest['Signal'].item() if hasattr(latest['Signal'], 'item') else latest['Signal']
 
     signal_type = None
     reasons = []
