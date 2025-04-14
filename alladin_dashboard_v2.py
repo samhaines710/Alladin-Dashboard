@@ -19,9 +19,9 @@ except ImportError:
 
 # === Tickers to Track ===
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
-ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']  # crypto + commodities run 24/7
+ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']
 
-# === RSA Timezone Logic ===
+# === Market Timing (RSA) ===
 def market_is_open(ticker):
     utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
     rsa = pytz.timezone("Africa/Johannesburg")
@@ -34,13 +34,12 @@ def market_is_open(ticker):
     if weekday >= 5:
         return False
 
-    # RSA market: 15:30–22:00 local time
     if ticker not in ALWAYS_ON:
         return (hour == 15 and minute >= 30) or (16 <= hour < 22)
 
     return True
 
-# === Data Fetching ===
+# === Fetch and Preprocess Data ===
 def fetch_data(ticker, interval='15m', period='2d'):
     try:
         df = yf.download(ticker, interval=interval, period=period, progress=False)
@@ -72,22 +71,22 @@ def compute_macd(series, short=12, long=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
-# === Signal Detection ===
+# === Signal Evaluation ===
 def evaluate_signals(df, ticker):
     if df is None or len(df) < 30:
         return None
 
-    last_index = df.index[-1]
-    second_last_index = df.index[-2]
-
     try:
-        close_now = df.at[last_index, 'Close']
-        close_prev = df.at[second_last_index, 'Close']
+        latest = df.iloc[-1]
+        previous = df.iloc[-2]
+
+        close_now = float(latest['Close'])
+        close_prev = float(previous['Close'])
         price_change = ((close_now - close_prev) / close_prev) * 100
 
-        rsi = float(df.at[last_index, 'RSI'])
-        macd = float(df.at[last_index, 'MACD'])
-        signal = float(df.at[last_index, 'Signal'])
+        rsi = float(latest['RSI'])
+        macd = float(latest['MACD'])
+        signal = float(latest['Signal'])
     except Exception as e:
         print(f"[{ticker}] Error extracting float values: {e}")
         return None
@@ -121,7 +120,7 @@ def evaluate_signals(df, ticker):
 
     return None
 
-# === Alert System ===
+# === Send Alert ===
 def send_telegram_alert(message):
     if TELEGRAM_ENABLED and bot:
         try:
@@ -129,10 +128,10 @@ def send_telegram_alert(message):
         except Exception as e:
             print(f"Telegram error: {e}")
 
-# === Main Runtime ===
+# === Run the Dashboard ===
 def main():
-    now = dt.datetime.now(pytz.timezone('Africa/Johannesburg')).strftime('%Y-%m-%d %H:%M:%S')
-    print(f"Running Alladin Dashboard at RSA time: {now}")
+    rsa_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
+    print(f"Running Alladin Dashboard at RSA time: {rsa_now.strftime('%Y-%m-%d %H:%M:%S')}")
 
     alerts = []
 
