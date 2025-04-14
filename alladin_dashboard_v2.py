@@ -17,11 +17,11 @@ except ImportError:
     TELEGRAM_ENABLED = False
     bot = None
 
-# === Tickers to Track ===
+# === Tickers ===
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
 ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']
 
-# === RSA Market Hours Logic ===
+# === RSA Market Hours ===
 def market_is_open(ticker):
     utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
     rsa = pytz.timezone("Africa/Johannesburg")
@@ -52,7 +52,7 @@ def compute_macd(series, short=12, long=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
-# === Data Fetching ===
+# === Data Fetch ===
 def fetch_data(ticker, interval='15m', period='2d'):
     try:
         df = yf.download(ticker, interval=interval, period=period, progress=False)
@@ -67,7 +67,7 @@ def fetch_data(ticker, interval='15m', period='2d'):
         print(f"[{ticker}] Error fetching data: {e}")
         return None
 
-# === Signal Evaluation + Reversal Detection ===
+# === Signal Evaluation ===
 def evaluate_signals(df, ticker):
     if df is None or len(df) < 5:
         return None
@@ -75,11 +75,14 @@ def evaluate_signals(df, ticker):
     try:
         latest = df.iloc[-1]
         previous = df.iloc[-2]
-        rsi = float(latest['RSI'])
-        macd = float(latest['MACD'])
-        signal = float(latest['Signal'])
-        close_now = float(latest['Close'])
-        close_prev = float(previous['Close'])
+        prev2 = df.iloc[-3]
+        prev3 = df.iloc[-4]
+
+        rsi = latest['RSI'].item()
+        macd = latest['MACD'].item()
+        signal = latest['Signal'].item()
+        close_now = latest['Close'].item()
+        close_prev = previous['Close'].item()
         price_change = ((close_now - close_prev) / close_prev) * 100
     except Exception as e:
         print(f"[{ticker}] Error extracting float values: {e}")
@@ -109,20 +112,20 @@ def evaluate_signals(df, ticker):
         reasons.append(f"{price_change:.2f}%")
 
     # === Reversal Detection ===
-    prev3 = df.iloc[-4]
-    prev2 = df.iloc[-3]
+    try:
+        if prev3['MACD'].item() < prev3['Signal'].item() and \
+           prev2['MACD'].item() < prev2['Signal'].item() and \
+           macd > signal and rsi > prev2['RSI'].item():
+            reversal_msg = f"{ticker}: REVERSAL UP | RSI & MACD rising | WATCH @ {close_now:.2f}"
+            send_telegram_alert(reversal_msg)
 
-    trend_reversal = None
-
-    # Bullish Reversal: Down → Up
-    if prev3['MACD'] < prev3['Signal'] and prev2['MACD'] < prev2['Signal'] and macd > signal and rsi > prev2['RSI']:
-        trend_reversal = f"{ticker}: REVERSAL UP | RSI & MACD rising | WATCH @ {close_now:.2f}"
-        send_telegram_alert(trend_reversal)
-
-    # Bearish Reversal: Up → Down
-    elif prev3['MACD'] > prev3['Signal'] and prev2['MACD'] > prev2['Signal'] and macd < signal and rsi < prev2['RSI']:
-        trend_reversal = f"{ticker}: REVERSAL DOWN | RSI & MACD falling | WATCH @ {close_now:.2f}"
-        send_telegram_alert(trend_reversal)
+        elif prev3['MACD'].item() > prev3['Signal'].item() and \
+             prev2['MACD'].item() > prev2['Signal'].item() and \
+             macd < signal and rsi < prev2['RSI'].item():
+            reversal_msg = f"{ticker}: REVERSAL DOWN | RSI & MACD falling | WATCH @ {close_now:.2f}"
+            send_telegram_alert(reversal_msg)
+    except Exception as e:
+        print(f"[{ticker}] Reversal check failed: {e}")
 
     if signal_type:
         message = f"{ticker}: {signal_type} | {' | '.join(reasons)}"
@@ -164,4 +167,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
