@@ -203,5 +203,4 @@ else:
     print("Zone data unavailable.")
 
 df.to_csv("alladin_dashboard_v2.csv")
-send_telegram_alert("Test: Telegram is working from Alladin")
 print("Dashboard saved as alladin_dashboard_v2.csv")
