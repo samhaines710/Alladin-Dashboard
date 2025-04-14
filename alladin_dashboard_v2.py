@@ -8,7 +8,7 @@ import pytz
 # === Telegram Setup ===
 try:
     import telegram
-    TELEGRAM_ENABLED = True
+    https://www.diedamhuis.co.za/easy-beef-butternut-bobotie-recipe/TELEGRAM_ENABLED = True
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
     bot = telegram.Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID else None
@@ -21,41 +21,21 @@ except ImportError:
 TICKERS = ['DJT', 'WOLF', 'DOT', 'CL=F', 'NG=F', 'LMT', 'ETH-USD', 'BTC-USD', 'AAPL', 'TSLA']
 ALWAYS_ON = ['ETH-USD', 'BTC-USD', 'CL=F', 'NG=F']
 
-# === RSA Market Timing Logic ===
+# === RSA Market Hours Logic ===
 def market_is_open(ticker):
     utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
     rsa = pytz.timezone("Africa/Johannesburg")
     now = utc_now.astimezone(rsa)
-
     weekday = now.weekday()
     hour = now.hour
     minute = now.minute
-
     if weekday >= 5:
         return False
-
     if ticker not in ALWAYS_ON:
         return (hour == 15 and minute >= 30) or (16 <= hour < 22)
-
     return True
 
-# === Data Fetching ===
-def fetch_data(ticker, interval='15m', period='2d'):
-    try:
-        df = yf.download(ticker, interval=interval, period=period, progress=False)
-        if df is None or df.empty or len(df) < 30:
-            print(f"[{ticker}] No data available. Skipping.")
-            return None
-        df['returns'] = df['Close'].pct_change()
-        df['RSI'] = compute_rsi(df['Close'])
-        df['MACD'], df['Signal'] = compute_macd(df['Close'])
-        df = df.dropna()
-        return df if len(df) >= 2 else None
-    except Exception as e:
-        print(f"[{ticker}] Error fetching data: {e}")
-        return None
-
-# === Technical Indicators ===
+# === Indicators ===
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
@@ -72,19 +52,35 @@ def compute_macd(series, short=12, long=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
-# === Signal Logic (Safe and Accurate) ===
+# === Data Fetching ===
+def fetch_data(ticker, interval='15m', period='2d'):
+    try:
+        df = yf.download(ticker, interval=interval, period=period, progress=False)
+        if df is None or df.empty or len(df) < 30:
+            print(f"[{ticker}] No data available. Skipping.")
+            return None
+        df['returns'] = df['Close'].pct_change()
+        df['RSI'] = compute_rsi(df['Close'])
+        df['MACD'], df['Signal'] = compute_macd(df['Close'])
+        return df.dropna()
+    except Exception as e:
+        print(f"[{ticker}] Error fetching data: {e}")
+        return None
+
+# === Signal Evaluation + Reversal Detection ===
 def evaluate_signals(df, ticker):
+    if df is None or len(df) < 5:
+        return None
+
     try:
         latest = df.iloc[-1]
         previous = df.iloc[-2]
-
-        close_now = float(latest['Close'])
-        close_prev = float(previous['Close'])
-        price_change = ((close_now - close_prev) / close_prev) * 100
-
         rsi = float(latest['RSI'])
         macd = float(latest['MACD'])
         signal = float(latest['Signal'])
+        close_now = float(latest['Close'])
+        close_prev = float(previous['Close'])
+        price_change = ((close_now - close_prev) / close_prev) * 100
     except Exception as e:
         print(f"[{ticker}] Error extracting float values: {e}")
         return None
@@ -92,6 +88,7 @@ def evaluate_signals(df, ticker):
     signal_type = None
     reasons = []
 
+    # === Momentum-Based Signals ===
     if price_change > 1.0 and rsi > 55 and macd > signal:
         signal_type = "STRONG BUY"
         reasons.append(f"RSI {rsi:.1f}")
@@ -111,14 +108,29 @@ def evaluate_signals(df, ticker):
         reasons.append("MACD falling")
         reasons.append(f"{price_change:.2f}%")
 
+    # === Reversal Detection ===
+    prev3 = df.iloc[-4]
+    prev2 = df.iloc[-3]
+
+    trend_reversal = None
+
+    # Bullish Reversal: Down → Up
+    if prev3['MACD'] < prev3['Signal'] and prev2['MACD'] < prev2['Signal'] and macd > signal and rsi > prev2['RSI']:
+        trend_reversal = f"{ticker}: REVERSAL UP | RSI & MACD rising | WATCH @ {close_now:.2f}"
+        send_telegram_alert(trend_reversal)
+
+    # Bearish Reversal: Up → Down
+    elif prev3['MACD'] > prev3['Signal'] and prev2['MACD'] > prev2['Signal'] and macd < signal and rsi < prev2['RSI']:
+        trend_reversal = f"{ticker}: REVERSAL DOWN | RSI & MACD falling | WATCH @ {close_now:.2f}"
+        send_telegram_alert(trend_reversal)
+
     if signal_type:
         message = f"{ticker}: {signal_type} | {' | '.join(reasons)}"
         send_telegram_alert(message)
         return message
-
     return None
 
-# === Telegram Alerting ===
+# === Telegram Alerts ===
 def send_telegram_alert(message):
     if TELEGRAM_ENABLED and bot:
         try:
@@ -126,7 +138,7 @@ def send_telegram_alert(message):
         except Exception as e:
             print(f"Telegram error: {e}")
 
-# === Main Execution ===
+# === Main ===
 def main():
     rsa_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
     print(f"Running Alladin Dashboard at RSA time: {rsa_now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -135,14 +147,10 @@ def main():
 
     for ticker in TICKERS:
         if not market_is_open(ticker):
-            print(f"[{ticker}] Market is closed. Skipping.")
+            print(f"[{ticker}] Market closed. Skipping.")
             continue
 
         df = fetch_data(ticker)
-        if df is None:
-            print(f"[{ticker}] Skipping due to bad data.")
-            continue
-
         result = evaluate_signals(df, ticker)
         if result:
             alerts.append(result)
