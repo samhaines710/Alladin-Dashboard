@@ -22,12 +22,12 @@ COMMODITIES = ['CL=F', 'NG=F', 'ETH-USD', 'BTC-USD']
 STOCKS = ['DJT', 'WOLF', 'LMT', 'AAPL', 'TSLA', 'DOT']
 ETFS = ['SPY', 'IVV']  # Add additional ETFs as desired
 TICKERS = COMMODITIES + STOCKS + ETFS
-# ALWAYS_ON: These tickers run continuously (i.e. commodities and ETFs)
+# ALWAYS_ON: These tickers run continuously (commodities and ETFs)
 ALWAYS_ON = COMMODITIES + ETFS
 
 # === News/Sentiment Intelligence Placeholder ===
 def get_news_sentiment(ticker):
-    # Stub: Replace with a real API or web scraper logic.
+    # Stub: Replace with a real news/sentiment API or web scraper logic.
     preset = {
         'DJT': 'Bearish',   # Example: negative news for DJT.
         'WOLF': 'Neutral',
@@ -40,7 +40,7 @@ def get_news_sentiment(ticker):
     }
     return preset.get(ticker, "Neutral")
 
-# === Market Hours (RSA Time) ===
+# === RSA Market Hours Logic (SAST) ===
 def market_is_open(ticker):
     utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
     rsa = pytz.timezone("Africa/Johannesburg")
@@ -53,7 +53,7 @@ def market_is_open(ticker):
     # For stocks and ETFs, only run during 15:30–22:00 SAST.
     if ticker in STOCKS or ticker in ETFS:
         return (hour == 15 and minute >= 30) or (16 <= hour < 22)
-    # Commodities/crypto run 24/7.
+    # Commodities and crypto run 24/7.
     return True
 
 # === Indicator Calculations ===
@@ -73,14 +73,25 @@ def compute_macd(series, short=12, long=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
+# === Fixed compute_atr() Function ===
 def compute_atr(df, period=14):
-    # ATR: average true range
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    tr = high_low.combine(high_close, max).combine(low_close, max)
-    atr = tr.rolling(window=period).mean()
-    return atr
+    """
+    Computes the Average True Range (ATR) for the DataFrame.
+    Uses a column-based approach and avoids ambiguous comparisons.
+    """
+    # Make a copy so as not to modify the original dataframe.
+    df = df.copy()
+    # Shift the Close column to get the previous close.
+    df['prev_close'] = df['Close'].shift(1)
+    # Calculate the three ranges.
+    df['range1'] = df['High'] - df['Low']
+    df['range2'] = (df['High'] - df['prev_close']).abs()
+    df['range3'] = (df['Low'] - df['prev_close']).abs()
+    # True Range is the maximum of the three ranges.
+    df['tr'] = df[['range1', 'range2', 'range3']].max(axis=1)
+    # ATR is the rolling mean of the True Range.
+    df['atr'] = df['tr'].rolling(window=period).mean()
+    return df['atr']
 
 # === Data Fetching ===
 def fetch_data(ticker, interval='15m', period='2d'):
@@ -97,18 +108,17 @@ def fetch_data(ticker, interval='15m', period='2d'):
         print(f"[{ticker}] Error fetching data: {e}")
         return None
 
-# === Options Evaluation for Commodities ===
+# === Options Evaluation for Commodities (NG and Oil) ===
 def evaluate_options(ticker, df, signal_type):
-    # Only apply to oil and natural gas.
     if ticker not in ['CL=F', 'NG=F']:
         return None
     current_price = float(df.iloc[-1]['Close'])
-    atr = compute_atr(df).iloc[-1]  # Get current ATR
-    # Base thresholds for low volatility.
+    atr = compute_atr(df).iloc[-1]
+    # Base thresholds when volatility is low.
     target_pct = 0.02
     stop_pct = 0.01
-    # If ATR relative to price is high, adjust thresholds.
-    if atr / current_price > 0.01:  # e.g., ATR is >1% of price.
+    # Increase thresholds during high volatility.
+    if atr / current_price > 0.01:  # e.g., ATR > 1% of price.
         target_pct = 0.03
         stop_pct = 0.015
     if signal_type in ["STRONG BUY", "BUY"]:
@@ -123,7 +133,7 @@ def evaluate_options(ticker, df, signal_type):
         return f"{ticker}: PUT OPTION | Entry: {entry:.2f} | Target: {target:.2f} | Stop: {stop:.2f}"
     return None
 
-# === Signal and Reversal Evaluation ===
+# === Signal & Reversal Evaluation ===
 def evaluate_signals(df, ticker):
     if df is None or len(df) < 5:
         return None
@@ -197,7 +207,7 @@ def evaluate_signals(df, ticker):
                 signal_type = "SUSPEND SELL"
                 reasons.append("(Positive news override)")
 
-    # --- Trend Reversal Detection (for all tickers) ---
+    # --- Trend Reversal Detection (applies to all tickers) ---
     try:
         if prev3['MACD'].item() < prev3['Signal'].item() and \
            prev2['MACD'].item() < prev2['Signal'].item() and \
@@ -212,7 +222,7 @@ def evaluate_signals(df, ticker):
     except Exception as e:
         print(f"[{ticker}] Reversal check failed: {e}")
 
-    # --- Options Signal (for commodities only) ---
+    # --- Options Signal Evaluation (for commodities only) ---
     options_signal = None
     if ticker in COMMODITIES:
         options_signal = evaluate_options(ticker, df, signal_type)
@@ -223,6 +233,7 @@ def evaluate_signals(df, ticker):
         message = f"{ticker}: {signal_type} | {' | '.join(reasons)}"
         send_telegram_alert(message)
         return message
+
     return None
 
 # === Telegram Alert Sending ===
