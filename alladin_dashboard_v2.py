@@ -141,8 +141,32 @@ def fetch_vix():
     df = yf.download('^VIX', period='1d', interval='5m', progress=False)
     if df is None or df.empty:
         return None
-    # Return a scalar float using .iloc[-1]
-    return float(df['Close'].iloc[-1])
+
+    # Flatten multi-index columns if necessary
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ['_'.join(col).strip() for col in df.columns.values]
+        for c in list(df.columns):
+            if 'open' in c.lower():
+                df.rename(columns={c: 'Open'}, inplace=True)
+            elif 'high' in c.lower():
+                df.rename(columns={c: 'High'}, inplace=True)
+            elif 'low' in c.lower():
+                df.rename(columns={c: 'Low'}, inplace=True)
+            elif 'close' in c.lower() and 'adj' not in c.lower():
+                df.rename(columns={c: 'Close'}, inplace=True)
+            elif 'volume' in c.lower():
+                df.rename(columns={c: 'Volume'}, inplace=True)
+    if 'Close' not in df.columns:
+        print("No 'Close' column found in ^VIX data.")
+        return None
+
+    # Use .iloc[-1] and convert explicitly to float
+    try:
+        val = df['Close'].iloc[-1]
+        return float(val)
+    except Exception as e:
+        print(f"Error converting VIX value to float: {e}")
+        return None
 
 def adjust_strategy_based_on_vix():
     vix = fetch_vix()
@@ -383,11 +407,10 @@ def main():
             alerts.append(msg)
         
         # For short-term tickers, apply VIX-based enhanced trade entry logic.
-        if ticker in SHORT_TERM_TICKERS:
-            if sig in ["STRONG BUY", "BUY", "STRONG SELL", "SELL"]:
-                trade_suggestion = evaluate_trade_entry(ticker, df, sig)
-                if trade_suggestion:
-                    send_telegram_alert(trade_suggestion)
+        if ticker in SHORT_TERM_TICKERS and sig in ["STRONG BUY", "BUY", "STRONG SELL", "SELL"]:
+            trade_suggestion = evaluate_trade_entry(ticker, df, sig)
+            if trade_suggestion:
+                send_telegram_alert(trade_suggestion)
     
     if alerts:
         print("\n--- Alerts ---")
