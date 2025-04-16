@@ -17,14 +17,26 @@ except ImportError:
     TELEGRAM_ENABLED = False
     bot = None
 
-# === Ticker Categories ===
+# === Enhanced Ticker Categories ===
+# Top–code lists
+SHORT_TERM_TICKERS = ['NG=F', 'CL=F', 'BTC-USD', 'ETH-USD', 'WOLF', 'DJT']
+LONG_TERM_TICKERS = ['LMT', 'NVDA', 'PLTR', 'ASML', 'CCJ', 'WMT', 'CVS', 'T', 'GC=F', 'SI=F', 'HG=F', 'SPY', 'QQQ', 'XLE', 'XLF', 'XLK', 'ARKK', 'GDX']
+
+# Bottom–code base categories
 COMMODITIES = ['CL=F', 'NG=F', 'ETH-USD', 'BTC-USD']
 STOCKS = ['DJT', 'WOLF', 'LMT', 'AAPL', 'TSLA', 'DOT']
 ETFS = ['SPY', 'IVV']
-TICKERS = COMMODITIES + STOCKS + ETFS
-ALWAYS_ON = COMMODITIES + ETFS  # Run 24/7 for these
 
-# === (Optional) News Intelligence ===
+# Merge all tickers while preserving order and removing duplicates:
+all_tickers = SHORT_TERM_TICKERS + LONG_TERM_TICKERS + COMMODITIES + STOCKS + ETFS
+seen = set()
+TICKERS = []
+for t in all_tickers:
+    if t not in seen:
+        seen.add(t)
+        TICKERS.append(t)
+
+# (Optional) News Intelligence – for stocks only
 def get_news_sentiment(ticker):
     preset = {
         'DJT': 'Bearish',
@@ -51,7 +63,7 @@ def market_is_open(ticker):
     if ticker in STOCKS or ticker in ETFS:
         # 15:30–22:00 SAST for stocks & ETFs
         return (hour == 15 and minute >= 30) or (16 <= hour < 22)
-    # Otherwise (commodities/crypto), run 24/7
+    # Otherwise (commodities, crypto, and long–term tickers): assume 24/7 trading
     return True
 
 # === Indicator Functions ===
@@ -73,15 +85,14 @@ def compute_macd(series, short=12, long=26, signal=9):
 
 def compute_atr(df, period=14):
     """
-    Computes Average True Range without .combine() calls.
+    Computes Average True Range.
     """
-    # Copy so as not to edit original
     df = df.copy()
     df['prev_close'] = df['Close'].shift(1)
     df['range1'] = df['High'] - df['Low']
     df['range2'] = (df['High'] - df['prev_close']).abs()
     df['range3'] = (df['Low'] - df['prev_close']).abs()
-    df['tr'] = df[['range1','range2','range3']].max(axis=1)
+    df['tr'] = df[['range1', 'range2', 'range3']].max(axis=1)
     df['atr'] = df['tr'].rolling(window=period).mean()
     return df['atr']
 
@@ -93,75 +104,115 @@ def fetch_data(ticker, interval='15m', period='2d'):
             print(f"[{ticker}] No data or insufficient rows.")
             return None
         
-        # 1) Flatten multi-level columns if necessary
+        # Flatten multi–level columns if needed
         if isinstance(df.columns, pd.MultiIndex):
-            # Convert multi-index columns to single level:
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
-            # Now columns might be: 'Open_', 'High_', 'Low_', 'Close_', etc.
-            # Attempt to rename them properly:
             for c in list(df.columns):
                 if 'open' in c.lower():
-                    df.rename(columns={c:'Open'}, inplace=True)
+                    df.rename(columns={c: 'Open'}, inplace=True)
                 elif 'high' in c.lower():
-                    df.rename(columns={c:'High'}, inplace=True)
+                    df.rename(columns={c: 'High'}, inplace=True)
                 elif 'low' in c.lower():
-                    df.rename(columns={c:'Low'}, inplace=True)
+                    df.rename(columns={c: 'Low'}, inplace=True)
                 elif 'close' in c.lower() and 'adj' not in c.lower():
-                    df.rename(columns={c:'Close'}, inplace=True)
+                    df.rename(columns={c: 'Close'}, inplace=True)
                 elif 'volume' in c.lower():
-                    df.rename(columns={c:'Volume'}, inplace=True)
-
-        # 2) Ensure we have standard columns
-        needed_cols = {'High','Low','Close'}
+                    df.rename(columns={c: 'Volume'}, inplace=True)
+        
+        # Ensure required columns are present
+        needed_cols = {'High', 'Low', 'Close'}
         if not needed_cols.issubset(df.columns):
-            print(f"[{ticker}] Missing required columns after flatten: {needed_cols - set(df.columns)}")
+            print(f"[{ticker}] Missing required columns: {needed_cols - set(df.columns)}")
             return None
         
-        # 3) Basic transformations
+        # Basic transformations and indicators
         df['returns'] = df['Close'].pct_change()
         df['RSI'] = compute_rsi(df['Close'])
-        
-        # 4) MACD & Signal assignment
         macd_series, signal_series = compute_macd(df['Close'])
         df['MACD'] = macd_series
         df['Signal'] = signal_series
-
-        # 5) Drop any final NA rows
         df.dropna(inplace=True)
         return df
     except Exception as e:
         print(f"[{ticker}] Error in fetch_data: {e}")
         return None
 
-# === Options for Commodities (NG & Oil) ===
+# === VIX Logic & Trade Entry (Enhanced Strategy) ===
+def fetch_vix():
+    df = yf.download('^VIX', period='1d', interval='5m', progress=False)
+    if df.empty:
+        return None
+    return df['Close'][-1]
+
+def adjust_strategy_based_on_vix():
+    vix = fetch_vix()
+    if vix is None:
+        return {'mode': 'balanced', 'target_pct': 0.02, 'stop_pct': 0.01}
+    if vix > 25:
+        return {'mode': 'short-term', 'target_pct': 0.015, 'stop_pct': 0.0075}
+    elif vix < 15:
+        return {'mode': 'long-term', 'target_pct': 0.03, 'stop_pct': 0.015}
+    else:
+        return {'mode': 'balanced', 'target_pct': 0.02, 'stop_pct': 0.01}
+
+def evaluate_trade_entry(ticker, df, signal_type):
+    """
+    For short–term tickers, adjust option entry using VIX–based strategy.
+    """
+    try:
+        current_price = df.iloc[-1]['Close']
+    except Exception as e:
+        print(f"[{ticker}] Error obtaining current price: {e}")
+        return None
+
+    atr_series = compute_atr(df)
+    if atr_series.isna().all():
+        return None
+
+    strat = adjust_strategy_based_on_vix()
+    target_pct = strat['target_pct']
+    stop_pct = strat['stop_pct']
+
+    if signal_type in ["STRONG BUY", "BUY"]:
+        entry = current_price
+        target = current_price * (1 + target_pct)
+        stop = current_price * (1 - stop_pct)
+        return (f"{ticker}: CALL OPTION | Entry: {entry:.2f} | "
+                f"Target: {target:.2f} | Stop: {stop:.2f} | Mode: {strat['mode']}")
+    elif signal_type in ["STRONG SELL", "SELL"]:
+        entry = current_price
+        target = current_price * (1 - target_pct)
+        stop = current_price * (1 + stop_pct)
+        return (f"{ticker}: PUT OPTION | Entry: {entry:.2f} | "
+                f"Target: {target:.2f} | Stop: {stop:.2f} | Mode: {strat['mode']}")
+    return None
+
+# === Options for Commodities (Excluding NG=F & CL=F if managed by trade entry) ===
 def evaluate_options(ticker, df, signal_type):
-    if ticker not in ['CL=F','NG=F']:
+    # Only for tickers that are in commodities but not NG=F or CL=F (managed by VIX strategy)
+    if ticker not in ['CL=F', 'NG=F']:
         return None
-    if df.empty or len(df)<1:
+    if df.empty or len(df) < 1:
         return None
-    
-    # Current close
+
     current_price = float(df.iloc[-1]['Close'])
-    # ATR for volatility
     atr_series = compute_atr(df)
     if atr_series.isna().all():
         return None
     atr_val = atr_series.iloc[-1]
-    
-    # Base thresholds
+
     target_pct = 0.02
     stop_pct = 0.01
-    # If ATR is > 1% of current price => increase thresholds
     if atr_val / current_price > 0.01:
         target_pct = 0.03
         stop_pct = 0.015
-    
-    if signal_type in ["STRONG BUY","BUY"]:
+
+    if signal_type in ["STRONG BUY", "BUY"]:
         entry = current_price
         target = current_price * (1 + target_pct)
         stop = current_price * (1 - stop_pct)
         return f"{ticker}: CALL OPTION | Entry: {entry:.2f} | Target: {target:.2f} | Stop: {stop:.2f}"
-    elif signal_type in ["STRONG SELL","SELL"]:
+    elif signal_type in ["STRONG SELL", "SELL"]:
         entry = current_price
         target = current_price * (1 - target_pct)
         stop = current_price * (1 + stop_pct)
@@ -170,8 +221,12 @@ def evaluate_options(ticker, df, signal_type):
 
 # === Signal & Reversal Evaluation ===
 def evaluate_signals(df, ticker):
-    if df is None or len(df)<5:
-        return None
+    """
+    Evaluates momentum signals and reversals.
+    Returns a tuple of (signal_type, message) if a signal is generated.
+    """
+    if df is None or len(df) < 5:
+        return None, None
     
     try:
         latest = df.iloc[-1]
@@ -181,95 +236,123 @@ def evaluate_signals(df, ticker):
         
         close_now = float(latest['Close'])
         close_prev = float(prev['Close'])
-        price_change = ((close_now - close_prev)/close_prev)*100
+        price_change = ((close_now - close_prev) / close_prev) * 100
         
         rsi = float(latest['RSI'])
         macd = float(latest['MACD'])
-        sig = float(latest['Signal'])
+        sig_line = float(latest['Signal'])
     except Exception as e:
         print(f"[{ticker}] Error extracting final values: {e}")
-        return None
+        return None, None
 
     signal_type = None
     reasons = []
 
-    # Commodities/ETFs => more sensitive triggers
+    # For Commodities and ETFs, use more sensitive triggers
     if ticker in COMMODITIES or ticker in ETFS:
-        if price_change>1.0 and rsi>55 and macd>sig:
+        if price_change > 1.0 and rsi > 55 and macd > sig_line:
             signal_type = "STRONG BUY"
             reasons.append(f"RSI {rsi:.1f}")
             reasons.append("MACD crossover")
             reasons.append(f"+{price_change:.2f}%")
-        elif price_change<-1.5 and rsi<45 and macd<sig:
+        elif price_change < -1.5 and rsi < 45 and macd < sig_line:
             signal_type = "STRONG SELL"
             reasons.append(f"RSI {rsi:.1f}")
             reasons.append("MACD downward")
             reasons.append(f"{price_change:.2f}%")
-        elif macd>sig and price_change>0.5:
+        elif macd > sig_line and price_change > 0.5:
             signal_type = "BUY"
             reasons.append("MACD rising")
             reasons.append(f"+{price_change:.2f}%")
-        elif macd<sig and price_change<-0.5:
+        elif macd < sig_line and price_change < -0.5:
             signal_type = "SELL"
             reasons.append("MACD falling")
             reasons.append(f"{price_change:.2f}%")
-    
-    # Stocks => looser thresholds
+    # For tickers defined as stocks
     elif ticker in STOCKS:
-        if price_change>1.5 and rsi>60 and macd>sig:
+        if price_change > 1.5 and rsi > 60 and macd > sig_line:
             signal_type = "STRONG BUY"
             reasons.append(f"RSI {rsi:.1f}")
             reasons.append("MACD crossover")
             reasons.append(f"+{price_change:.2f}%")
-        elif price_change<-2.0 and rsi<40 and macd<sig:
+        elif price_change < -2.0 and rsi < 40 and macd < sig_line:
             signal_type = "STRONG SELL"
             reasons.append(f"RSI {rsi:.1f}")
             reasons.append("MACD downward")
             reasons.append(f"{price_change:.2f}%")
-        elif macd>sig and price_change>1.0:
+        elif macd > sig_line and price_change > 1.0:
             signal_type = "BUY"
             reasons.append("MACD rising")
             reasons.append(f"+{price_change:.2f}%")
-        elif macd<sig and price_change<-1.0:
+        elif macd < sig_line and price_change < -1.0:
             signal_type = "SELL"
             reasons.append("MACD falling")
             reasons.append(f"{price_change:.2f}%")
         
-        # News overrides for stocks
+        # News override for stocks
         sentiment = get_news_sentiment(ticker)
-        if sentiment!="Neutral":
+        if sentiment != "Neutral":
             reasons.append(f"News: {sentiment}")
-            if sentiment=="Bearish" and signal_type in ["STRONG BUY","BUY"]:
+            if sentiment == "Bearish" and signal_type in ["STRONG BUY", "BUY"]:
                 signal_type = "SUSPEND BUY"
                 reasons.append("(Negative news override)")
-            elif sentiment=="Bullish" and signal_type in ["STRONG SELL","SELL"]:
+            elif sentiment == "Bullish" and signal_type in ["STRONG SELL", "SELL"]:
                 signal_type = "SUSPEND SELL"
                 reasons.append("(Positive news override)")
-    
-    # Trend Reversal
+    else:
+        # For all other tickers (e.g. long-term tickers not in STOCKS/COMMODITIES/ETFS)
+        if price_change > 1.5 and rsi > 60 and macd > sig_line:
+            signal_type = "STRONG BUY"
+            reasons.append(f"RSI {rsi:.1f}")
+            reasons.append("MACD crossover")
+            reasons.append(f"+{price_change:.2f}%")
+        elif price_change < -2.0 and rsi < 40 and macd < sig_line:
+            signal_type = "STRONG SELL"
+            reasons.append(f"RSI {rsi:.1f}")
+            reasons.append("MACD downward")
+            reasons.append(f"{price_change:.2f}%")
+        elif macd > sig_line and price_change > 1.0:
+            signal_type = "BUY"
+            reasons.append("MACD rising")
+            reasons.append(f"+{price_change:.2f}%")
+        elif macd < sig_line and price_change < -1.0:
+            signal_type = "SELL"
+            reasons.append("MACD falling")
+            reasons.append(f"{price_change:.2f}%")
+        # (Optional) News override if data is available
+        sentiment = get_news_sentiment(ticker)
+        if sentiment != "Neutral":
+            reasons.append(f"News: {sentiment}")
+            if sentiment == "Bearish" and signal_type in ["STRONG BUY", "BUY"]:
+                signal_type = "SUSPEND BUY"
+                reasons.append("(Negative news override)")
+            elif sentiment == "Bullish" and signal_type in ["STRONG SELL", "SELL"]:
+                signal_type = "SUSPEND SELL"
+                reasons.append("(Positive news override)")
+
+    # Trend Reversal Signals (applies to any ticker with sufficient data)
     try:
-        if prev3['MACD']<prev3['Signal'] and prev2['MACD']<prev2['Signal'] and macd>sig and rsi>prev2['RSI']:
+        if prev3['MACD'] < prev3['Signal'] and prev2['MACD'] < prev2['Signal'] and macd > sig_line and rsi > prev2['RSI']:
             rev_up = f"{ticker}: REVERSAL UP | RSI & MACD rising | WATCH @ {close_now:.2f}"
             send_telegram_alert(rev_up)
-        elif prev3['MACD']>prev3['Signal'] and prev2['MACD']>prev2['Signal'] and macd<sig and rsi<prev2['RSI']:
+        elif prev3['MACD'] > prev3['Signal'] and prev2['MACD'] > prev2['Signal'] and macd < sig_line and rsi < prev2['RSI']:
             rev_dn = f"{ticker}: REVERSAL DOWN | RSI & MACD falling | WATCH @ {close_now:.2f}"
             send_telegram_alert(rev_dn)
     except Exception as e:
         print(f"[{ticker}] Reversal check failed: {e}")
 
-    # Commodity Options Signals
-    if ticker in COMMODITIES:
+    # For commodities other than NG=F and CL=F (which are handled by trade entry) use options signals
+    if ticker in COMMODITIES and ticker not in ['NG=F', 'CL=F']:
         opt_sig = evaluate_options(ticker, df, signal_type)
         if opt_sig:
             send_telegram_alert(opt_sig)
 
-    # Final momentum signal
     if signal_type:
         msg = f"{ticker}: {signal_type} | {' | '.join(reasons)}"
         send_telegram_alert(msg)
-        return msg
+        return signal_type, msg
     
-    return None
+    return None, None
 
 # === Telegram Alerts ===
 def send_telegram_alert(message):
@@ -281,8 +364,15 @@ def send_telegram_alert(message):
 
 # === Main ===
 def main():
-    local_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
+    rsa_tz = pytz.timezone("Africa/Johannesburg")
+    local_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(rsa_tz)
     print(f"Running Alladin at RSA time: {local_now.strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    vix_level = fetch_vix()
+    if vix_level is not None:
+        print(f"Current VIX: {vix_level:.2f}")
+    else:
+        print("VIX data unavailable.")
 
     alerts = []
     for ticker in TICKERS:
@@ -291,9 +381,22 @@ def main():
             continue
         
         df = fetch_data(ticker)
-        result = evaluate_signals(df, ticker)
-        if result:
-            alerts.append(result)
+        if df is None:
+            continue
+        
+        # Evaluate momentum signals and receive both the raw signal and message.
+        sig, msg = evaluate_signals(df, ticker)
+        if sig is not None:
+            alerts.append(msg)
+        
+        # For tickers designated as short-term (or NG=F/CL=F), apply VIX–based enhanced trade entry logic.
+        # (Avoid duplicating alerts for commodities already handled by evaluate_options.)
+        if ticker in SHORT_TERM_TICKERS:
+            # Only proceed if the signal is a basic BUY/SELL decision (not suspend orders)
+            if sig in ["STRONG BUY", "BUY", "STRONG SELL", "SELL"]:
+                trade_suggestion = evaluate_trade_entry(ticker, df, sig)
+                if trade_suggestion:
+                    send_telegram_alert(trade_suggestion)
     
     if alerts:
         print("\n--- Alerts ---")
@@ -302,5 +405,5 @@ def main():
     else:
         print("No signals triggered.")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
