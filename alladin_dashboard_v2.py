@@ -141,8 +141,8 @@ def fetch_vix():
     df = yf.download('^VIX', period='1d', interval='5m', progress=False)
     if df is None or df.empty:
         return None
-    # Use .iloc[-1] for proper integer-based indexing
-    return df['Close'].iloc[-1]
+    # Return a scalar float using .iloc[-1]
+    return float(df['Close'].iloc[-1])
 
 def adjust_strategy_based_on_vix():
     vix = fetch_vix()
@@ -160,7 +160,7 @@ def evaluate_trade_entry(ticker, df, signal_type):
     For short-term tickers, adjusts option entry using VIX-based strategy.
     """
     try:
-        current_price = df['Close'].iloc[-1]
+        current_price = float(df['Close'].iloc[-1])
     except Exception as e:
         print(f"[{ticker}] Error obtaining current price: {e}")
         return None
