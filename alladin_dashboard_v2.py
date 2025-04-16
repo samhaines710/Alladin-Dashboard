@@ -65,7 +65,7 @@ def compute_atr(df, period=14):
     return df['atr']
 
 # === Data Fetching ===
-def fetch_data(ticker, interval='15m', period='2d'):
+def fetch_data(ticker, interval='5m', period='1d'):
     try:
         df = yf.download(ticker, interval=interval, period=period, progress=False)
         if df is None or df.empty or len(df) < 30:
@@ -128,16 +128,16 @@ def evaluate_signals(df, ticker):
     reasons = []
 
     if ticker in COMMODITIES + ETFS:
-        if price_change > 1.0 and rsi > 55 and macd > sig:
+        if price_change > 0.8 and rsi > 55 and macd > sig:
             signal_type = "STRONG BUY"
             reasons += [f"RSI {rsi:.1f}", "MACD crossover", f"+{price_change:.2f}%"]
-        elif price_change < -1.5 and rsi < 45 and macd < sig:
+        elif price_change < -0.8 and rsi < 45 and macd < sig:
             signal_type = "STRONG SELL"
             reasons += [f"RSI {rsi:.1f}", "MACD down", f"{price_change:.2f}%"]
-        elif macd > sig and price_change > 0.5:
+        elif macd > sig and price_change > 0.4:
             signal_type = "BUY"
             reasons += ["MACD rising", f"+{price_change:.2f}%"]
-        elif macd < sig and price_change < -0.5:
+        elif macd < sig and price_change < -0.4:
             signal_type = "SELL"
             reasons += ["MACD falling", f"{price_change:.2f}%"]
 
