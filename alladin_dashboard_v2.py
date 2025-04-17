@@ -24,21 +24,9 @@ ETFS = ['SPY', 'IVV']
 TICKERS = COMMODITIES + STOCKS + ETFS
 ALWAYS_ON = COMMODITIES + ETFS
 
-# === News Sentiment (Mock Logic) ===
-def get_news_sentiment(ticker):
-    preset = {
-        'DJT': 'Bearish',
-        'WOLF': 'Neutral',
-        'LMT': 'Neutral',
-        'AAPL': 'Bullish',
-        'TSLA': 'Neutral',
-        'DOT': 'Neutral',
-        'SPY': 'Neutral',
-        'IVV': 'Neutral'
-    }
-    return preset.get(ticker, "Neutral")
+peak_tracker = {}
 
-# === Market Time Filter ===
+# === Market Hours (RSA) ===
 def market_is_open(ticker):
     utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
     rsa = pytz.timezone("Africa/Johannesburg")
@@ -52,7 +40,7 @@ def market_is_open(ticker):
         return (hour == 15 and minute >= 30) or (16 <= hour < 22)
     return True
 
-# === Indicators ===
+# === Indicator Functions ===
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
@@ -79,7 +67,7 @@ def compute_atr(df, period=14):
     df['atr'] = df['tr'].rolling(window=period).mean()
     return df['atr']
 
-# === Telegram Alert ===
+# === Telegram Alerts ===
 def send_telegram_alert(message):
     if TELEGRAM_ENABLED and bot:
         try:
@@ -87,47 +75,59 @@ def send_telegram_alert(message):
         except Exception as e:
             print(f"Telegram error: {e}")
 
-# === Main ===
+# === Main Execution ===
 def main():
     local_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
     print(f"Running Alladin at RSA time: {local_now.strftime('%Y-%m-%d %H:%M:%S')}")
-
     for ticker in TICKERS:
         if not market_is_open(ticker):
             print(f"[{ticker}] Market closed. Skipping.")
             continue
 
         try:
-            df = yf.download(ticker, interval='5m', period='2d', progress=False)
-            if df is None or df.empty or len(df) < 30:
+            df = yf.download(ticker, interval='5m', period='1d', progress=False)
+            if df is None or df.empty or len(df) < 20:
                 print(f"[{ticker}] No data or insufficient rows.")
                 continue
 
-            df['returns'] = df['Close'].pct_change()
             df['RSI'] = compute_rsi(df['Close'])
-            macd_series, signal_series = compute_macd(df['Close'])
-            df['MACD'] = macd_series
-            df['Signal'] = signal_series
+            macd, signal = compute_macd(df['Close'])
+            df['MACD'] = macd
+            df['Signal'] = signal
             df.dropna(inplace=True)
 
-            # Apex logic (momentum peak + MACD histogram fade)
-            if len(df) >= 3:
-                macd_hist = df['MACD'] - df['Signal']
-                if macd_hist.iloc[-2] > macd_hist.iloc[-1] and macd_hist.iloc[-3] < macd_hist.iloc[-2]:
-                    send_telegram_alert(f"{ticker}: APEX WARNING | MACD histogram fading | Possible reversal")
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            rsi_now = last['RSI']
+            macd_now = last['MACD']
+            sig_now = last['Signal']
+            price_now = last['Close']
+            price_prev = prev['Close']
 
-            # RSI divergence (simplified)
-            if df['RSI'].iloc[-1] > df['RSI'].iloc[-2] and df['Close'].iloc[-1] < df['Close'].iloc[-2]:
-                send_telegram_alert(f"{ticker}: RSI DIVERGENCE | Price dropping while RSI rising | Watch for reversal")
+            if ticker not in peak_tracker:
+                peak_tracker[ticker] = {'price': 0, 'rsi': 0, 'time': None, 'macd': 0, 'signal': 0, 'status': 'watching', 'fallback_count': 0}
 
-            # Volatility Squeeze (Bollinger Bands logic)
-            df['MA20'] = df['Close'].rolling(window=20).mean()
-            df['stddev'] = df['Close'].rolling(window=20).std()
-            df['Upper'] = df['MA20'] + 2*df['stddev']
-            df['Lower'] = df['MA20'] - 2*df['stddev']
-            bb_width = df['Upper'] - df['Lower']
-            if bb_width.iloc[-1] < bb_width.iloc[-5:].mean() * 0.75:
-                send_telegram_alert(f"{ticker}: VOLATILITY SQUEEZE | Bollinger Band tightness | BIGGER MOVE COMING")
+            tracker = peak_tracker[ticker]
+
+            # Peak detection
+            if price_now > tracker['price'] and rsi_now > 65 and macd_now > sig_now:
+                peak_tracker[ticker] = {'price': price_now, 'rsi': rsi_now, 'time': local_now, 'macd': macd_now, 'signal': sig_now, 'status': 'peaked', 'fallback_count': 0}
+                send_telegram_alert(f"{ticker}: LOCAL PEAK DETECTED @ {price_now:.2f} | RSI {rsi_now:.1f} | MACD {macd_now:.2f}")
+
+            elif tracker['status'] == 'peaked' and price_now < tracker['price'] * 0.995 and rsi_now < tracker['rsi'] - 3:
+                send_telegram_alert(f"{ticker}: DIP FROM PEAK @ {price_now:.2f} | Watching for Rebound | Previous Peak: {tracker['price']:.2f}")
+                peak_tracker[ticker]['status'] = 'dipped'
+                peak_tracker[ticker]['fallback_count'] = 0
+
+            elif tracker['status'] == 'dipped':
+                if macd_now > sig_now and rsi_now > prev['RSI']:
+                    send_telegram_alert(f"{ticker}: EARLY CALL ZONE | Re-Peak Expected | Entry @ {price_now:.2f} | Previous Peak {tracker['price']:.2f}")
+                    peak_tracker[ticker]['status'] = 'watching'
+                else:
+                    peak_tracker[ticker]['fallback_count'] += 1
+                    if peak_tracker[ticker]['fallback_count'] >= 3:
+                        send_telegram_alert(f"{ticker}: ABORT CALL ZONE | Momentum Lost After Dip | Avoid Entry @ {price_now:.2f}")
+                        peak_tracker[ticker]['status'] = 'watching'
 
         except Exception as e:
             print(f"[{ticker}] Data error: {e}")
