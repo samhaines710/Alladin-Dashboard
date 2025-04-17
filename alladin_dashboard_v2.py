@@ -1,15 +1,10 @@
-# === Ultimate Alladin Dashboard v2 ===
-# Includes: real-time signals, apex prediction, reversal detection, next-best-entry logic,
-# adaptive confidence filtering, and Telegram alerts
-
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime as dt
-import pytz
 import os
+import pytz
 
-# === Telegram Setup ===
 try:
     import telegram
     TELEGRAM_ENABLED = True
@@ -17,31 +12,54 @@ try:
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
     bot = telegram.Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID else None
 except ImportError:
+    print("Telegram module not found. Alerts disabled.")
     TELEGRAM_ENABLED = False
     bot = None
 
-# === Ticker Categories ===
-COMMODITIES = ['CL=F', 'NG=F']
+COMMODITIES = ['CL=F', 'NG=F', 'ETH-USD', 'BTC-USD']
 STOCKS = ['DJT', 'WOLF', 'LMT', 'AAPL', 'TSLA', 'DOT']
 ETFS = ['SPY', 'IVV']
 TICKERS = COMMODITIES + STOCKS + ETFS
+ALWAYS_ON = COMMODITIES + ETFS
 
-# === Market Hours Check (RSA) ===
+
+def get_news_sentiment(ticker):
+    preset = {
+        'DJT': 'Bearish',
+        'WOLF': 'Neutral',
+        'LMT': 'Neutral',
+        'AAPL': 'Bullish',
+        'TSLA': 'Neutral',
+        'DOT': 'Neutral',
+        'SPY': 'Neutral',
+        'IVV': 'Neutral'
+    }
+    return preset.get(ticker, "Neutral")
+
+
 def market_is_open(ticker):
-    now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
-    if now.weekday() >= 5: return False
-    if ticker in COMMODITIES: return True
-    return 15 <= now.hour < 22
+    utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+    rsa = pytz.timezone("Africa/Johannesburg")
+    now = utc_now.astimezone(rsa)
+    wd = now.weekday()
+    hour = now.hour
+    minute = now.minute
+    if wd >= 5:
+        return False
+    if ticker in STOCKS or ticker in ETFS:
+        return (hour == 15 and minute >= 30) or (16 <= hour < 22)
+    return True
 
-# === Indicators ===
+
 def compute_rsi(series, period=14):
     delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
+
 
 def compute_macd(series, short=12, long=26, signal=9):
     exp1 = series.ewm(span=short, adjust=False).mean()
@@ -50,86 +68,180 @@ def compute_macd(series, short=12, long=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
+
 def compute_atr(df, period=14):
     df = df.copy()
     df['prev_close'] = df['Close'].shift(1)
-    df['tr'] = pd.concat([
-        df['High'] - df['Low'],
-        (df['High'] - df['prev_close']).abs(),
-        (df['Low'] - df['prev_close']).abs()
-    ], axis=1).max(axis=1)
-    return df['tr'].rolling(window=period).mean()
+    df['range1'] = df['High'] - df['Low']
+    df['range2'] = (df['High'] - df['prev_close']).abs()
+    df['range3'] = (df['Low'] - df['prev_close']).abs()
+    df['tr'] = df[['range1', 'range2', 'range3']].max(axis=1)
+    df['atr'] = df['tr'].rolling(window=period).mean()
+    return df['atr']
 
-# === Apex Prediction ===
-def predict_apex(df):
-    if len(df) < 10: return False
-    recent_highs = df['High'].rolling(3).max()
-    is_flat = recent_highs[-3:].std() < 0.05
-    if is_flat and df['MACD'].iloc[-1] < df['Signal'].iloc[-1]:
-        return True
-    return False
 
-# === Fetch Data ===
-def fetch_data(ticker, interval='5m', period='1d'):
+def fetch_data(ticker, interval='15m', period='2d'):
     try:
         df = yf.download(ticker, interval=interval, period=period, progress=False)
-        if df.empty: return None
+        if df is None or df.empty or len(df) < 30:
+            print(f"[{ticker}] No data or insufficient rows.")
+            return None
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = ['_'.join(col).strip() for col in df.columns.values]
+            for c in list(df.columns):
+                if 'open' in c.lower():
+                    df.rename(columns={c: 'Open'}, inplace=True)
+                elif 'high' in c.lower():
+                    df.rename(columns={c: 'High'}, inplace=True)
+                elif 'low' in c.lower():
+                    df.rename(columns={c: 'Low'}, inplace=True)
+                elif 'close' in c.lower() and 'adj' not in c.lower():
+                    df.rename(columns={c: 'Close'}, inplace=True)
+                elif 'volume' in c.lower():
+                    df.rename(columns={c: 'Volume'}, inplace=True)
+
+        needed_cols = {'High', 'Low', 'Close'}
+        if not needed_cols.issubset(df.columns):
+            print(f"[{ticker}] Missing required columns after flatten: {needed_cols - set(df.columns)}")
+            return None
+
         df['returns'] = df['Close'].pct_change()
         df['RSI'] = compute_rsi(df['Close'])
-        macd, sig = compute_macd(df['Close'])
-        df['MACD'], df['Signal'] = macd, sig
+        macd_series, signal_series = compute_macd(df['Close'])
+        df['MACD'] = macd_series
+        df['Signal'] = signal_series
+
         df.dropna(inplace=True)
         return df
-    except: return None
+    except Exception as e:
+        print(f"[{ticker}] Error in fetch_data: {e}")
+        return None
 
-# === Signal Logic ===
-def evaluate_signals(ticker, df):
+
+def send_telegram_alert(message):
+    if TELEGRAM_ENABLED and bot:
+        try:
+            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        except Exception as e:
+            print(f"Telegram error: {e}")
+
+
+def evaluate_signals(df, ticker):
+    if df is None or len(df) < 5:
+        return None
+
     try:
         latest = df.iloc[-1]
         prev = df.iloc[-2]
-        rsi, macd, sig = latest['RSI'], latest['MACD'], latest['Signal']
-        change = df['Close'].pct_change().iloc[-1] * 100
-        signal, reason = None, []
+        prev2 = df.iloc[-3]
+        prev3 = df.iloc[-4]
 
-        # Entry logic
-        if rsi > 55 and macd > sig and change > 0.5:
-            signal = "CALL"
-            reason.append(f"RSI {rsi:.1f} MACD+ {macd:.2f}>{sig:.2f}")
-        elif rsi < 45 and macd < sig and change < -0.5:
-            signal = "PUT"
-            reason.append(f"RSI {rsi:.1f} MACD- {macd:.2f}<{sig:.2f}")
+        close_now = float(latest['Close'])
+        close_prev = float(prev['Close'])
+        price_change = ((close_now - close_prev) / close_prev) * 100
 
-        # Apex logic
-        if predict_apex(df):
-            reason.append("APEX DETECTED")
-            signal = "APEX WARNING"
-
-        if signal:
-            price = latest['Close']
-            msg = f"{ticker}: {signal} | Price: {price:.2f} | {' | '.join(reason)}"
-            send_telegram_alert(msg)
-            return msg
+        rsi = float(latest['RSI'])
+        macd = float(latest['MACD'])
+        sig = float(latest['Signal'])
     except Exception as e:
-        print(f"[{ticker}] Signal error: {e}")
+        print(f"[{ticker}] Error extracting final values: {e}")
+        return None
+
+    signal_type = None
+    reasons = []
+
+    if ticker in COMMODITIES or ticker in ETFS:
+        if price_change > 1.0 and rsi > 55 and macd > sig:
+            signal_type = "STRONG BUY"
+            reasons.append(f"RSI {rsi:.1f}")
+            reasons.append("MACD crossover")
+            reasons.append(f"+{price_change:.2f}%")
+        elif price_change < -1.5 and rsi < 45 and macd < sig:
+            signal_type = "STRONG SELL"
+            reasons.append(f"RSI {rsi:.1f}")
+            reasons.append("MACD downward")
+            reasons.append(f"{price_change:.2f}%")
+        elif macd > sig and price_change > 0.5:
+            signal_type = "BUY"
+            reasons.append("MACD rising")
+            reasons.append(f"+{price_change:.2f}%")
+        elif macd < sig and price_change < -0.5:
+            signal_type = "SELL"
+            reasons.append("MACD falling")
+            reasons.append(f"{price_change:.2f}%")
+
+    elif ticker in STOCKS:
+        if price_change > 1.5 and rsi > 60 and macd > sig:
+            signal_type = "STRONG BUY"
+            reasons.append(f"RSI {rsi:.1f}")
+            reasons.append("MACD crossover")
+            reasons.append(f"+{price_change:.2f}%")
+        elif price_change < -2.0 and rsi < 40 and macd < sig:
+            signal_type = "STRONG SELL"
+            reasons.append(f"RSI {rsi:.1f}")
+            reasons.append("MACD downward")
+            reasons.append(f"{price_change:.2f}%")
+        elif macd > sig and price_change > 1.0:
+            signal_type = "BUY"
+            reasons.append("MACD rising")
+            reasons.append(f"+{price_change:.2f}%")
+        elif macd < sig and price_change < -1.0:
+            signal_type = "SELL"
+            reasons.append("MACD falling")
+            reasons.append(f"{price_change:.2f}%")
+
+        sentiment = get_news_sentiment(ticker)
+        if sentiment != "Neutral":
+            reasons.append(f"News: {sentiment}")
+            if sentiment == "Bearish" and signal_type in ["STRONG BUY", "BUY"]:
+                signal_type = "SUSPEND BUY"
+                reasons.append("(Negative news override)")
+            elif sentiment == "Bullish" and signal_type in ["STRONG SELL", "SELL"]:
+                signal_type = "SUSPEND SELL"
+                reasons.append("(Positive news override)")
+
+    try:
+        if (prev3['MACD'] < prev3['Signal']) and (prev2['MACD'] < prev2['Signal']) and (macd > sig) and (rsi > prev2['RSI']):
+            rev_up = f"{ticker}: REVERSAL UP | RSI & MACD rising | WATCH @ {close_now:.2f}"
+            send_telegram_alert(rev_up)
+        elif (prev3['MACD'] > prev3['Signal']) and (prev2['MACD'] > prev2['Signal']) and (macd < sig) and (rsi < prev2['RSI']):
+            rev_dn = f"{ticker}: REVERSAL DOWN | RSI & MACD falling | WATCH @ {close_now:.2f}"
+            send_telegram_alert(rev_dn)
+    except Exception as e:
+        print(f"[{ticker}] Reversal check failed: {e}")
+
+    if signal_type:
+        msg = f"{ticker}: {signal_type} | {' | '.join(reasons)}"
+        send_telegram_alert(msg)
+        return msg
+
     return None
 
-# === Telegram ===
-def send_telegram_alert(msg):
-    if TELEGRAM_ENABLED and bot:
-        try:
-            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-        except Exception as e:
-            print("Telegram failed:", e)
 
-# === MAIN ===
 def main():
-    now = dt.datetime.now(pytz.timezone("Africa/Johannesburg"))
-    print(f"Alladin running at {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    local_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
+    print(f"Running Alladin at RSA time: {local_now.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    alerts = []
     for ticker in TICKERS:
-        if not market_is_open(ticker): continue
+        if not market_is_open(ticker):
+            print(f"[{ticker}] Market closed. Skipping.")
+            continue
+
         df = fetch_data(ticker)
-        if df is not None:
-            evaluate_signals(ticker, df)
+        result = evaluate_signals(df, ticker)
+        if result:
+            alerts.append(result)
+
+    if alerts:
+        print("\n--- Alerts ---")
+        for a in alerts:
+            print(a)
+    else:
+        print("No signals triggered.")
+
 
 if __name__ == "__main__":
     main()
+
