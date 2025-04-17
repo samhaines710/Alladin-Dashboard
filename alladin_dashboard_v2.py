@@ -1,10 +1,9 @@
-# Alladin Ultimate v2 - Apex Enhanced
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime as dt
-import pytz
 import os
+import pytz
 
 # === Telegram Setup ===
 try:
@@ -14,24 +13,73 @@ try:
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
     bot = telegram.Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID else None
 except ImportError:
+    print("Telegram module not found. Alerts disabled.")
     TELEGRAM_ENABLED = False
     bot = None
 
-COMMODITIES = ['CL=F', 'NG=F']
+# === Ticker Categories ===
+COMMODITIES = ['CL=F', 'NG=F', 'ETH-USD', 'BTC-USD']
 STOCKS = ['DJT', 'WOLF', 'LMT', 'AAPL', 'TSLA', 'DOT']
 ETFS = ['SPY', 'IVV']
 TICKERS = COMMODITIES + STOCKS + ETFS
-signal_log = {}
+ALWAYS_ON = COMMODITIES + ETFS
 
-# === Helpers ===
+# === News Sentiment (Mock Logic) ===
+def get_news_sentiment(ticker):
+    preset = {
+        'DJT': 'Bearish',
+        'WOLF': 'Neutral',
+        'LMT': 'Neutral',
+        'AAPL': 'Bullish',
+        'TSLA': 'Neutral',
+        'DOT': 'Neutral',
+        'SPY': 'Neutral',
+        'IVV': 'Neutral'
+    }
+    return preset.get(ticker, "Neutral")
+
+# === Market Time Filter ===
 def market_is_open(ticker):
-    now = dt.datetime.now(pytz.timezone("Africa/Johannesburg"))
-    if now.weekday() >= 5:
+    utc_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+    rsa = pytz.timezone("Africa/Johannesburg")
+    now = utc_now.astimezone(rsa)
+    wd = now.weekday()
+    hour = now.hour
+    minute = now.minute
+    if wd >= 5:
         return False
-    if ticker in STOCKS + ETFS:
-        return 15 <= now.hour < 22
+    if ticker in STOCKS or ticker in ETFS:
+        return (hour == 15 and minute >= 30) or (16 <= hour < 22)
     return True
 
+# === Indicators ===
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def compute_macd(series, short=12, long=26, signal=9):
+    exp1 = series.ewm(span=short, adjust=False).mean()
+    exp2 = series.ewm(span=long, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd, signal_line
+
+def compute_atr(df, period=14):
+    df = df.copy()
+    df['prev_close'] = df['Close'].shift(1)
+    df['range1'] = df['High'] - df['Low']
+    df['range2'] = (df['High'] - df['prev_close']).abs()
+    df['range3'] = (df['Low'] - df['prev_close']).abs()
+    df['tr'] = df[['range1','range2','range3']].max(axis=1)
+    df['atr'] = df['tr'].rolling(window=period).mean()
+    return df['atr']
+
+# === Telegram Alert ===
 def send_telegram_alert(message):
     if TELEGRAM_ENABLED and bot:
         try:
@@ -39,117 +87,50 @@ def send_telegram_alert(message):
         except Exception as e:
             print(f"Telegram error: {e}")
 
-# === Indicator Logic ===
-def compute_indicators(df):
-    df['returns'] = df['Close'].pct_change()
-    df['RSI'] = df['Close'].diff().apply(lambda x: x if x > 0 else 0).rolling(14).mean() / \
-                df['Close'].diff().abs().rolling(14).mean() * 100
-    exp1 = df['Close'].ewm(span=12).mean()
-    exp2 = df['Close'].ewm(span=26).mean()
-    df['MACD'] = exp1 - exp2
-    df['Signal'] = df['MACD'].ewm(span=9).mean()
-    df['Hist'] = df['MACD'] - df['Signal']
-    df['UpperBB'] = df['Close'].rolling(window=20).mean() + 2*df['Close'].rolling(window=20).std()
-    df['LowerBB'] = df['Close'].rolling(window=20).mean() - 2*df['Close'].rolling(window=20).std()
-    df['BBWidth'] = df['UpperBB'] - df['LowerBB']
-    df['BBWidthNorm'] = df['BBWidth'].rolling(20).mean()
-    return df.dropna()
-
-def fetch_data(ticker, interval='5m', period='2d'):
-    df = yf.download(ticker, interval=interval, period=period, progress=False)
-    if df.empty or len(df) < 20:
-        return None
-    return compute_indicators(df)
-
-def evaluate_signal(df, ticker):
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    prev3 = df.iloc[-3]
-    rsi = latest['RSI']
-    macd, signal = latest['MACD'], latest['Signal']
-    price_now = latest['Close']
-    price_prev = prev['Close']
-    change = (price_now - price_prev) / price_prev * 100
-
-    key = f"{ticker}_trend"
-    timestamp = dt.datetime.now().strftime('%Y-%m-%d %H:%M')
-    signal_type = None
-
-    # === Primary Signal Logic ===
-    if ticker in COMMODITIES + ETFS:
-        if change > 1.0 and rsi > 55 and macd > signal:
-            signal_type = "STRONG BUY"
-        elif change < -1.5 and rsi < 45 and macd < signal:
-            signal_type = "STRONG SELL"
-    elif ticker in STOCKS:
-        if change > 1.5 and rsi > 60 and macd > signal:
-            signal_type = "STRONG BUY"
-        elif change < -2.0 and rsi < 40 and macd < signal:
-            signal_type = "STRONG SELL"
-
-    if key in signal_log and signal_log[key]['type'] == signal_type:
-        if signal_type:
-            carry_msg = f"[{ticker}] CONTINUED {signal_type} | Trend persistent | Reconfirming @ {price_now:.2f} | {timestamp}"
-            send_telegram_alert(carry_msg)
-            return carry_msg
-
-    if signal_type:
-        signal_msg = f"[{ticker}] {signal_type} | RSI: {rsi:.1f} | MACD: {macd:.2f} | Price: {price_now:.2f}"
-        send_telegram_alert(signal_msg)
-        signal_log[key] = {"type": signal_type, "price": price_now, "time": timestamp}
-
-        # === Option Forecast ===
-        if ticker in COMMODITIES:
-            direction = "CALL" if "BUY" in signal_type else "PUT"
-            entry = price_now
-            target = price_now * (1.03 if direction == "CALL" else 0.97)
-            stop = price_now * (0.985 if direction == "CALL" else 1.015)
-            best_entry = price_now * (0.996 if direction == "CALL" else 1.004)
-            option_msg = f"[{ticker}] {direction} OPTION | Entry: {entry:.2f} | Target: {target:.2f} | Stop: {stop:.2f} | Best Entry: {best_entry:.2f}"
-            send_telegram_alert(option_msg)
-            return option_msg
-
-        return signal_msg
-
-    # === Apex & Reversal Signals ===
-    if df['Hist'].iloc[-2] > df['Hist'].iloc[-1] and df['MACD'].iloc[-1] > 0:
-        send_telegram_alert(f"[{ticker}] MACD Histogram Fading | Bull Momentum Weakening")
-
-    if df['Hist'].iloc[-2] < df['Hist'].iloc[-1] and df['MACD'].iloc[-1] < 0:
-        send_telegram_alert(f"[{ticker}] MACD Histogram Fading | Bear Momentum Weakening")
-
-    if df['BBWidth'].iloc[-1] < df['BBWidthNorm'].iloc[-1] * 0.75:
-        send_telegram_alert(f"[{ticker}] VOLATILITY SQUEEZE | Tight range forming | Big move likely soon")
-
-    if (df['Close'].iloc[-1] > df['Close'].iloc[-2] and df['RSI'].iloc[-1] < df['RSI'].iloc[-2]):
-        send_telegram_alert(f"[{ticker}] BEARISH DIVERGENCE | Price rising, RSI falling")
-
-    if (df['Close'].iloc[-1] < df['Close'].iloc[-2] and df['RSI'].iloc[-1] > df['RSI'].iloc[-2]):
-        send_telegram_alert(f"[{ticker}] BULLISH DIVERGENCE | Price falling, RSI rising")
-
-    return None
-
+# === Main ===
 def main():
-    print("Running Alladin Ultimate Apex...")
-    alerts = []
+    local_now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).astimezone(pytz.timezone("Africa/Johannesburg"))
+    print(f"Running Alladin at RSA time: {local_now.strftime('%Y-%m-%d %H:%M:%S')}")
+
     for ticker in TICKERS:
         if not market_is_open(ticker):
             print(f"[{ticker}] Market closed. Skipping.")
             continue
-        df = fetch_data(ticker)
-        if df is None:
-            print(f"[{ticker}] Data error.")
-            continue
-        result = evaluate_signal(df, ticker)
-        if result:
-            alerts.append(result)
 
-    if alerts:
-        print("\n--- SIGNALS ---")
-        for alert in alerts:
-            print(alert)
-    else:
-        print("No signals triggered.")
+        try:
+            df = yf.download(ticker, interval='5m', period='2d', progress=False)
+            if df is None or df.empty or len(df) < 30:
+                print(f"[{ticker}] No data or insufficient rows.")
+                continue
+
+            df['returns'] = df['Close'].pct_change()
+            df['RSI'] = compute_rsi(df['Close'])
+            macd_series, signal_series = compute_macd(df['Close'])
+            df['MACD'] = macd_series
+            df['Signal'] = signal_series
+            df.dropna(inplace=True)
+
+            # Apex logic (momentum peak + MACD histogram fade)
+            if len(df) >= 3:
+                macd_hist = df['MACD'] - df['Signal']
+                if macd_hist.iloc[-2] > macd_hist.iloc[-1] and macd_hist.iloc[-3] < macd_hist.iloc[-2]:
+                    send_telegram_alert(f"{ticker}: APEX WARNING | MACD histogram fading | Possible reversal")
+
+            # RSI divergence (simplified)
+            if df['RSI'].iloc[-1] > df['RSI'].iloc[-2] and df['Close'].iloc[-1] < df['Close'].iloc[-2]:
+                send_telegram_alert(f"{ticker}: RSI DIVERGENCE | Price dropping while RSI rising | Watch for reversal")
+
+            # Volatility Squeeze (Bollinger Bands logic)
+            df['MA20'] = df['Close'].rolling(window=20).mean()
+            df['stddev'] = df['Close'].rolling(window=20).std()
+            df['Upper'] = df['MA20'] + 2*df['stddev']
+            df['Lower'] = df['MA20'] - 2*df['stddev']
+            bb_width = df['Upper'] - df['Lower']
+            if bb_width.iloc[-1] < bb_width.iloc[-5:].mean() * 0.75:
+                send_telegram_alert(f"{ticker}: VOLATILITY SQUEEZE | Bollinger Band tightness | BIGGER MOVE COMING")
+
+        except Exception as e:
+            print(f"[{ticker}] Data error: {e}")
 
 if __name__ == "__main__":
     main()
