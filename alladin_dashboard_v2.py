@@ -1,4 +1,4 @@
-# Alladin Ultimate v2 - Final Script
+# Alladin Ultimate v2 - Apex Enhanced
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -17,13 +17,10 @@ except ImportError:
     TELEGRAM_ENABLED = False
     bot = None
 
-# === Ticker Sets ===
 COMMODITIES = ['CL=F', 'NG=F']
 STOCKS = ['DJT', 'WOLF', 'LMT', 'AAPL', 'TSLA', 'DOT']
 ETFS = ['SPY', 'IVV']
 TICKERS = COMMODITIES + STOCKS + ETFS
-
-# === Persistent Logs ===
 signal_log = {}
 
 # === Helpers ===
@@ -42,6 +39,7 @@ def send_telegram_alert(message):
         except Exception as e:
             print(f"Telegram error: {e}")
 
+# === Indicator Logic ===
 def compute_indicators(df):
     df['returns'] = df['Close'].pct_change()
     df['RSI'] = df['Close'].diff().apply(lambda x: x if x > 0 else 0).rolling(14).mean() / \
@@ -50,6 +48,11 @@ def compute_indicators(df):
     exp2 = df['Close'].ewm(span=26).mean()
     df['MACD'] = exp1 - exp2
     df['Signal'] = df['MACD'].ewm(span=9).mean()
+    df['Hist'] = df['MACD'] - df['Signal']
+    df['UpperBB'] = df['Close'].rolling(window=20).mean() + 2*df['Close'].rolling(window=20).std()
+    df['LowerBB'] = df['Close'].rolling(window=20).mean() - 2*df['Close'].rolling(window=20).std()
+    df['BBWidth'] = df['UpperBB'] - df['LowerBB']
+    df['BBWidthNorm'] = df['BBWidth'].rolling(20).mean()
     return df.dropna()
 
 def fetch_data(ticker, interval='5m', period='2d'):
@@ -61,6 +64,7 @@ def fetch_data(ticker, interval='5m', period='2d'):
 def evaluate_signal(df, ticker):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
+    prev3 = df.iloc[-3]
     rsi = latest['RSI']
     macd, signal = latest['MACD'], latest['Signal']
     price_now = latest['Close']
@@ -71,7 +75,7 @@ def evaluate_signal(df, ticker):
     timestamp = dt.datetime.now().strftime('%Y-%m-%d %H:%M')
     signal_type = None
 
-    # === Signal Logic ===
+    # === Primary Signal Logic ===
     if ticker in COMMODITIES + ETFS:
         if change > 1.0 and rsi > 55 and macd > signal:
             signal_type = "STRONG BUY"
@@ -83,20 +87,18 @@ def evaluate_signal(df, ticker):
         elif change < -2.0 and rsi < 40 and macd < signal:
             signal_type = "STRONG SELL"
 
-    # === Trend Carryover ===
     if key in signal_log and signal_log[key]['type'] == signal_type:
         if signal_type:
             carry_msg = f"[{ticker}] CONTINUED {signal_type} | Trend persistent | Reconfirming @ {price_now:.2f} | {timestamp}"
             send_telegram_alert(carry_msg)
             return carry_msg
 
-    # === New Signal ===
     if signal_type:
         signal_msg = f"[{ticker}] {signal_type} | RSI: {rsi:.1f} | MACD: {macd:.2f} | Price: {price_now:.2f}"
         send_telegram_alert(signal_msg)
         signal_log[key] = {"type": signal_type, "price": price_now, "time": timestamp}
 
-        # === Options Forecast ===
+        # === Option Forecast ===
         if ticker in COMMODITIES:
             direction = "CALL" if "BUY" in signal_type else "PUT"
             entry = price_now
@@ -108,10 +110,27 @@ def evaluate_signal(df, ticker):
             return option_msg
 
         return signal_msg
+
+    # === Apex & Reversal Signals ===
+    if df['Hist'].iloc[-2] > df['Hist'].iloc[-1] and df['MACD'].iloc[-1] > 0:
+        send_telegram_alert(f"[{ticker}] MACD Histogram Fading | Bull Momentum Weakening")
+
+    if df['Hist'].iloc[-2] < df['Hist'].iloc[-1] and df['MACD'].iloc[-1] < 0:
+        send_telegram_alert(f"[{ticker}] MACD Histogram Fading | Bear Momentum Weakening")
+
+    if df['BBWidth'].iloc[-1] < df['BBWidthNorm'].iloc[-1] * 0.75:
+        send_telegram_alert(f"[{ticker}] VOLATILITY SQUEEZE | Tight range forming | Big move likely soon")
+
+    if (df['Close'].iloc[-1] > df['Close'].iloc[-2] and df['RSI'].iloc[-1] < df['RSI'].iloc[-2]):
+        send_telegram_alert(f"[{ticker}] BEARISH DIVERGENCE | Price rising, RSI falling")
+
+    if (df['Close'].iloc[-1] < df['Close'].iloc[-2] and df['RSI'].iloc[-1] > df['RSI'].iloc[-2]):
+        send_telegram_alert(f"[{ticker}] BULLISH DIVERGENCE | Price falling, RSI rising")
+
     return None
 
 def main():
-    print("Running Alladin Ultimate...")
+    print("Running Alladin Ultimate Apex...")
     alerts = []
     for ticker in TICKERS:
         if not market_is_open(ticker):
