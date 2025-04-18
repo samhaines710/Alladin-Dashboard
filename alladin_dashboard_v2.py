@@ -61,22 +61,37 @@ def build_feature_matrix(tickers):
                 (last["BB_high"] - last["BB_low"]),
             df["Close"].rolling(50).std().iloc[-1], # 50-period vol
         ]
-        rows.append(feats); idx.append(t)
+        rows.append(feats)
+        idx.append(t)
     return pd.DataFrame(rows, index=idx,
         columns=["ret1","RSI","MACD_hist","BB_pct","vol50"])
 
-# === PCA + UMAP ===
+# === PCA + UMAP (patched to avoid sequence error) ===
 def apply_pca_umap(features):
+    # 1) Force a clean float64 array (avoids object‑dtype sequences)
+    try:
+        X = features.to_numpy(dtype=float)
+    except Exception as e:
+        print("⚠️ Coercing features to numeric:", e)
+        # coerce each column to numeric, drop any rows with NaNs
+        features = features.apply(pd.to_numeric, errors="coerce").dropna(how="any")
+        X = features.to_numpy(dtype=float)
+
+    # 2) Run PCA on the numeric matrix
     pca = PCA(n_components=3)
-    pc = pca.fit_transform(features)
-    pca_df = pd.DataFrame(pc, index=features.index,
+    pc = pca.fit_transform(X)
+    pca_df = pd.DataFrame(pc,
+                          index=features.index,
                           columns=["PC1","PC2","PC3"])
 
+    # 3) Run UMAP on the PCA output array
     reducer = umap.UMAP(n_components=2, random_state=42)
-    umap_emb = reducer.fit_transform(pca_df)
-    umap_df = pd.DataFrame(umap_emb, index=features.index,
+    umap_emb = reducer.fit_transform(pc)
+    umap_df = pd.DataFrame(umap_emb,
+                           index=features.index,
                            columns=["UMAP1","UMAP2"])
 
+    # 4) Merge back into one DataFrame
     return features.join(pca_df).join(umap_df), pca, reducer
 
 # === Signal Logic ===
@@ -104,7 +119,6 @@ def generate_option_notifications(tickers):
             chain = tk.option_chain(exp)
             call_vol = chain.calls["volume"].sum()
             put_vol  = chain.puts["volume"].sum()
-            # avoid div-by-zero
             if put_vol == 0 and call_vol == 0:
                 continue
             ratio = call_vol / put_vol if put_vol else np.inf
@@ -113,8 +127,7 @@ def generate_option_notifications(tickers):
                 alerts[t] = f"CALL ALERT ({ratio:.2f}× calls vs puts)"
             elif ratio < 0.8:
                 alerts[t] = f"PUT ALERT  ({ratio:.2f}× calls vs puts)"
-        except Exception as e:
-            # yfinance may not support futures options (CL=F, NG=F)
+        except Exception:
             continue
     return alerts
 
@@ -127,15 +140,18 @@ def send_alerts(signals, option_alerts):
             line += f" | {option_alerts[t]}"
         lines.append(line)
 
+    msg = "\n".join(lines)
     if bot:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="\n".join(lines))
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
     else:
-        print("\n".join(lines))
+        print(msg)
 
-# === Main ===
+# === Main Execution ===
 def main():
     feats = build_feature_matrix(TICKERS)
     feats_exp, pca_model, umap_model = apply_pca_umap(feats)
+
+    # debugging output
     print("Expanded features:\n", feats_exp)
 
     signals = generate_signals(feats_exp)
